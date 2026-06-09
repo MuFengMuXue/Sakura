@@ -1,0 +1,8 @@
+llm:
+  # 可以使用 'deepseek-v4-pro' 或 'deepseek-chat'（即将弃用）
+  # 如需启用深度思考，可使用 'deepseek-v4-flash' 并添加 thinking 参数[reference:2]
+  model: "deepseek-v4-pro"
+  temperature: 0.7
+  # 明确指定 base_url，确保请求指向 DeepSeek
+  base_url: "https://api.deepseek.com/v1"
+  
