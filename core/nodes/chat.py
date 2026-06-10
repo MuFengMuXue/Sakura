@@ -3,6 +3,7 @@ import yaml
 from dotenv import load_dotenv
 from langchain_openai import ChatOpenAI
 from core.state import ChatState
+from langchain_core.messages import AIMessage
 
 load_dotenv()
 
@@ -21,4 +22,4 @@ llm = _load_llm()
 
 def chat_node(state: ChatState):
     response = llm.invoke(state["messages"])
-    return  {"messages": [response]}
+    return  {"messages": [AIMessage(content=response.content)]}

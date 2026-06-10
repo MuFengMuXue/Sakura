@@ -2,12 +2,8 @@
 venv/
 env/
 .venv/
-Sakura/   # 如果你在项目内又创建了子环境，请确认路径
-
 # 密钥与配置
 .env
-config/settings.yaml   # 如果 settings.yaml 中包含 API key 或其他敏感信息
-# 或者只排除 .env，根据你的实际情况
 
 # Python 缓存
 __pycache__/
@@ -20,7 +16,6 @@ __pycache__/
 
 # 日志和数据
 logs/
-data/
 *.db
 *.sqlite3
 
