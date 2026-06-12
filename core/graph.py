@@ -11,4 +11,4 @@ def build_graph():
     memory_saver = MemorySaver()
     return builder.compile(checkpointer=memory_saver)
 
-app = build_graph()
+graph = build_graph()

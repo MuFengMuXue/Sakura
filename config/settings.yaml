@@ -1,5 +1,5 @@
 llm:
   model: "deepseek-v4-pro"
-  temperature: 0.8
+  temperature: 0.5
   base_url: "https://api.deepseek.com/v1"
   
