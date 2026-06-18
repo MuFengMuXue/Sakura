@@ -1,11 +1,12 @@
-import requests
-from core.state import ChatState
+import aiohttp
+import asyncio
+from core.state import AgentState
 from langchain_core.messages import HumanMessage
 
-# 配置 MemOS 服务地址（根据实际情况修改）
 MEMOS_BASE_URL = "http://127.0.0.1:8000/product"
 
-def search_memories_node(state: ChatState) -> dict:
+async def search_memories_node(state: AgentState) -> dict:
+    """异步记忆检索节点，不阻塞事件循环"""
     user_id = "b32d0977-435d-4828-a86f-4f47f8b55bca"
     messages = state.get("messages", [])
     
@@ -22,27 +23,33 @@ def search_memories_node(state: ChatState) -> dict:
         "query": last_user_msg,
         "user_id": user_id,
         "readable_cube_ids": [user_id],
-        "dedup":"mmr",
+        "dedup": "mmr",
         "top_k": 5,
     }
     
     try:
-        response = requests.post(
-            f"{MEMOS_BASE_URL}/search",
-            json=payload,
-            timeout=10
-        )
-        response.raise_for_status()
-        data = response.json()
-        
-        memories = []
-        for bucket in data.get("data", {}).get("text_mem", []):
-            for mem in bucket.get("memories", []):
-                memories.append(mem.get("memory", ""))
-        
-        context = "\n".join(memories) if memories else ""
+        # 使用aiohttp进行异步请求
+        async with aiohttp.ClientSession() as session:
+            async with session.post(
+                f"{MEMOS_BASE_URL}/search",
+                json=payload,
+                timeout=aiohttp.ClientTimeout(total=3, connect=1)
+            ) as response:
+                response.raise_for_status()
+                data = await response.json()
+                
+                memories = []
+                for bucket in data.get("data", {}).get("text_mem", []):
+                    for mem in bucket.get("memories", []):
+                        memories.append(mem.get("memory", ""))
+                
+                context = "\n".join(memories) if memories else ""
+                
+    except asyncio.TimeoutError:
+        print("[HTTP检索] 请求超时，返回空上下文")
+        context = ""
     except Exception as e:
-        print(f"[HTTP检索] 出错：{e}")   # 保留错误日志，方便排查
+        print(f"[HTTP检索] 出错：{e}")
         context = ""
     
     return {"search_context": context}

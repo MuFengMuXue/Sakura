@@ -23,4 +23,11 @@ logs/
 *.log
 *.tmp
 
-memos
+memos/
+.memos/
+#tts模型
+VoxCPM2/
+
+
+#语音文件
+*.wav

@@ -1,5 +1,5 @@
 llm:
-  model: "deepseek-v4-flash"
+  model: "deepseek-chat"
   temperature: 0.9
   base_url: "https://api.deepseek.com/v1"
   

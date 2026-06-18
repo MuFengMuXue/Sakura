@@ -3,3 +3,5 @@ python-dotenv
 langchain-openai
 fast-langgraph
 langgraph-checkpoint-sqlite
+voxcpm
+sounddevice

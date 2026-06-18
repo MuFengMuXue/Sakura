@@ -1,10 +1,10 @@
 import json
 from memos.api.routers.server_router import search_memories
 from memos.api.product_models import APISearchRequest
-from core.state import ChatState
+from core.state import AgentState
 from langchain_core.messages import HumanMessage
 
-def search_memories_node(state: ChatState) -> dict:
+def search_memories_node(state: AgentState) -> dict:
     
     user_id = "b32d0977-435d-4828-a86f-4f47f8b55bca"
     messages = state.get("messages",[])

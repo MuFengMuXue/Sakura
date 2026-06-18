@@ -1,11 +1,12 @@
 import json
-from core.state import ChatState
+from core.state import AgentState
 from langchain_core.messages import HumanMessage, AIMessage
 from memos.api.routers.server_router import add_memories
 from memos.api.product_models import APIADDRequest
 
 
-def add_memories_node(state: ChatState) -> dict:
+def add_memories_node(state: AgentState) -> dict:
+    user_id = "b32d0977-435d-4828-a86f-4f47f8b55bca"
     messages = state.get("messages",[])
      
     if len(messages)<2:
@@ -26,7 +27,6 @@ def add_memories_node(state: ChatState) -> dict:
     user_msg = str(prev_msg.content) if prev_msg.content is not None else ""
     ai_msg = str(last_msg.content) if last_msg.content is not None else ""
     
-    user_id = "b32d0977-435d-4828-a86f-4f47f8b55bca"
     add_req = APIADDRequest(
             user_id = user_id,
             writable_cube_ids = [user_id],
