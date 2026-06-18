@@ -1,48 +1,41 @@
+import json
+from memos.api.routers.server_router import search_memories
+from memos.api.product_models import APISearchRequest
 from core.state import ChatState
 from langchain_core.messages import HumanMessage
-from memos.api.product_models import APISearchRequest
-from memos_client import get_search_handler
 
 def search_memories_node(state: ChatState) -> dict:
-    """检索与最后一条用户消息相关的记忆，并存入状态"""
-    user_id = "creator"
-    messages = state.get("messages", [])
-
-    # 获取最后一条用户消息
-    last_user_msg = None
-    for msg in reversed(messages):
-        if isinstance(msg, HumanMessage):
-            last_user_msg = msg.content
-            break
-
+    
+    user_id = "b32d0977-435d-4828-a86f-4f47f8b55bca"
+    messages = state.get("messages",[])
+    if not messages:
+        return {"search_context": ""}
+    
+    last_msg = messages[-1]
+    
+    if not isinstance(last_msg,HumanMessage):
+        return {"search_context": ""}
+    
+    last_user_msg = last_msg.content
+    
     if not last_user_msg:
         return {"search_context": ""}
-
-    # 构造搜索请求
-    req = APISearchRequest(
-        query=last_user_msg,
+    
+    search_req = APISearchRequest(
         user_id=user_id,
-        top_k=5,
+        readable_cube_ids=[user_id],
+        query= last_user_msg,
+        include_preference=True,
         dedup="mmr",
-        relativity=0.5,
-        readable_cube_ids=[user_id]
+        top_k= 5,
     )
-
-    try:
-        search_handler = get_search_handler()
-        response = search_handler.handle_search_memories(req)
-        # 提取记忆文本
-        memories = []
-        for bucket in response.data.get("text_mem", []):
-            for mem in bucket.get("memories", []):
-                memories.append(mem.get("memory", ""))
-        
-        if memories:
-            context = "\n".join(memories) if memories else "", "default_user"
-        else:
-            context = ""
-    except Exception as e:
-        print(f"[检索节点] 出错：{e}")
-        context = ""
+    search_rsp = search_memories(search_req).data
+    
+    memories = []
+    for bucket in search_rsp.get("text_mem", []):
+        for mem in bucket.get("memories", []):
+            memories.append(mem.get("memory", ""))
+    
+    context = "\n".join(memories) if memories else ""
 
     return {"search_context": context}

@@ -41,6 +41,7 @@ def chat_node(state: ChatState):
 
 请自然地融入这些信息，不要提及“根据记忆”等词语。
 """
+    print(f"最终提示词：{final_system_prompt}")
     
     messages = [SystemMessage(content=final_system_prompt)] + state["messages"]
     
