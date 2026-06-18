@@ -23,4 +23,5 @@ logs/
 *.log
 *.tmp
 
-memos
+memos/
+.memos/

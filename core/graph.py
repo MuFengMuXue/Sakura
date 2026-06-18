@@ -2,8 +2,8 @@ from langgraph.graph import StateGraph, START, END
 from langgraph.checkpoint.memory import MemorySaver
 from core.state import ChatState
 from core.nodes.chat import chat_node
-from core.nodes.search_memories import search_memories_node
-from core.nodes.add_memories import add_memories_node
+from core.nodes.search_memories_http import search_memories_node
+from core.nodes.add_memories_http import add_memories_node
 def build_graph():
     builder = StateGraph(ChatState)
     builder.add_node("chat", chat_node)
