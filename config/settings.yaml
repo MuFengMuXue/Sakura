@@ -2,4 +2,62 @@ llm:
   model: "deepseek-chat"
   temperature: 0.9
   base_url: "https://api.deepseek.com/v1"
-  
+  api_key: "sk-c7e8e2e1550e4e94a76098bb28bf3d47"
+
+embedding:
+  use_local_model: false
+  model_path: ""
+  model: "Qwen/Qwen3-Embedding-0.6B"
+  base_url: "https://api.siliconflow.cn/v1"
+  api_key: "sk-cawgctaiwbtwupdyuiwgknegdlhknaabulgtqbipotvogpvc"
+  vector_size: 1024
+  timeout: 30
+  max_retries: 3
+
+storage:
+  vector:
+    type: "qdrant"
+    path: "./data/qdrant"
+    collection_name: "memories"
+    vector_size: 1024                  
+  graph:
+    enable: true
+    type: "networkx"          
+    path: "./data/graph_store.json"
+
+search:
+  top_k: 4
+  similarity_threshold: 0.4
+  enable_reranker: false
+  enable_bm25: true
+  bm25_weight: 0.3
+  enable_graph_query: true
+  graph_max_depth: 3
+  importance_weight: 0.3
+  type_weight_factor: 0.2
+
+entity_extraction:
+  enable: true
+  auto_extract_on_add: true
+
+scheduler:
+  enable: true
+  use_redis: false
+  redis_url: "redis://localhost:6379"
+  max_workers: 4
+  quota_per_user: 100
+
+image:
+  enable: true
+  storage_path: "./data/images"
+  use_clip: false
+  max_size_mb: 5
+  auto_describe: true
+
+kb:
+  chunk_size: 500
+  chunk_overlap: 50
+
+users:
+  default_user_id: "01"
+  enable_multi_user: false

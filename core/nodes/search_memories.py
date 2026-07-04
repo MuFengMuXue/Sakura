@@ -1,41 +1,51 @@
-import json
-from memos.api.routers.server_router import search_memories
-from memos.api.product_models import APISearchRequest
+import aiohttp
+import asyncio
 from core.state import AgentState
 from langchain_core.messages import HumanMessage
 
-def search_memories_node(state: AgentState) -> dict:
+MEMOS_BASE_URL = "http://127.0.0.1:8004"
+
+async def search_memories_node(state: AgentState) -> dict:
+    """异步记忆检索节点，不阻塞事件循环"""
+    user_id = "01"
+    messages = state.get("messages", [])
     
-    user_id = "b32d0977-435d-4828-a86f-4f47f8b55bca"
-    messages = state.get("messages",[])
-    if not messages:
-        return {"search_context": ""}
-    
-    last_msg = messages[-1]
-    
-    if not isinstance(last_msg,HumanMessage):
-        return {"search_context": ""}
-    
-    last_user_msg = last_msg.content
+    last_user_msg = None
+    for msg in reversed(messages):
+        if isinstance(msg, HumanMessage):
+            last_user_msg = msg.content
+            break
     
     if not last_user_msg:
         return {"search_context": ""}
     
-    search_req = APISearchRequest(
-        user_id=user_id,
-        readable_cube_ids=[user_id],
-        query= last_user_msg,
-        include_preference=True,
-        dedup="mmr",
-        top_k= 5,
-    )
-    search_rsp = search_memories(search_req).data
+    payload = {
+        "query": last_user_msg,
+        "user_id": user_id,
+    }
     
-    memories = []
-    for bucket in search_rsp.get("text_mem", []):
-        for mem in bucket.get("memories", []):
-            memories.append(mem.get("memory", ""))
+    try:
+        # 使用aiohttp进行异步请求
+        async with aiohttp.ClientSession() as session:
+            async with session.post(
+                f"{MEMOS_BASE_URL}/search",
+                json=payload,
+                timeout=aiohttp.ClientTimeout(total=3, connect=1)
+            ) as response:
+                response.raise_for_status()
+                data = await response.json()
+                
+                memories = data.get("memories", [])
+                context = "\n".join([
+                    f"- {mem.get('content', '')}"
+                    for mem in memories
+                ]) if memories else ""
+                
+    except asyncio.TimeoutError:
+        print("[HTTP检索] 请求超时，返回空上下文")
+        context = ""
+    except Exception as e:
+        print(f"[HTTP检索] 出错：{e}")
+        context = ""
     
-    context = "\n".join(memories) if memories else ""
-
     return {"search_context": context}

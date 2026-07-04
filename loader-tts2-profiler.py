@@ -1,6 +1,6 @@
 # ========== 1. 必须放第一行：全局 Rust 加速 ==========
 import fast_langgraph
-fast_langgraph.shim.patch_langgraph()
+#fast_langgraph.shim.patch_langgraph()
 
 # ========== 2. 导入 ==========
 import asyncio
@@ -106,9 +106,7 @@ async def main():
         print()  # 换行
 
         # ===== 打印性能报告 =====
-        print(f"\n{'=' * 55}")
         print(f"⏱️  性能报告 (本轮对话)")
-        print(f"{'=' * 55}")
         print(f"总耗时:         {total_time * 1000:8.2f} ms")
         if first_chunk_time is not None:
             print(f"首字延迟(TTFT): {first_chunk_time * 1000:8.2f} ms")

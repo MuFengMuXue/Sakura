@@ -5,3 +5,4 @@ fast-langgraph
 langgraph-checkpoint-sqlite
 voxcpm
 sounddevice
+fastapi

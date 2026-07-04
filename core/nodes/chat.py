@@ -1,11 +1,10 @@
-import os
 import yaml
-from dotenv import load_dotenv
 from langchain_openai import ChatOpenAI
-from langchain_core.messages import AIMessage, SystemMessage
+from langchain_core.messages import AIMessage, SystemMessage, AIMessageChunk
 from core.state import AgentState
+from core.tools import memos_add_memory,memos_search_memory
 
-load_dotenv()
+tools = [memos_add_memory, memos_search_memory]
 
 def _load_llm():
     with open("config/settings.yaml", "r", encoding="utf-8") as f:
@@ -14,8 +13,8 @@ def _load_llm():
     return ChatOpenAI(
         model=llm_cfg["model"],
         temperature=llm_cfg["temperature"],
-        base_url=llm_cfg.get("base_url"),
-        api_key=os.getenv("DEEPSEEK_API_KEY"),
+        base_url=llm_cfg["base_url"],
+        api_key=llm_cfg["api_key"],
         streaming=True,
         max_retries=3,
     )
@@ -26,9 +25,8 @@ def _load_persona():
         return config["persona"]
 
 persona = _load_persona()
-llm = _load_llm()
+llm = _load_llm().bind_tools(tools)
 
-# 改为 async def
 async def chat_node(state: AgentState):
     context = state.get("search_context", "")
     
@@ -45,12 +43,18 @@ async def chat_node(state: AgentState):
     
     messages = [SystemMessage(content=final_system_prompt)] + state["messages"]
     
-    chunks = []
-    # 改为 async for 配合 astream
+    # ---------- 核心修改：使用累加器 ----------
+    full_message = None
     async for chunk in llm.astream(messages):
-        if chunk.content:
-            chunks.append(chunk.content)
+        if full_message is None:
+            full_message = chunk
+        else:
+            # 累加 chunk：自动合并 content 和 tool_calls
+            full_message = full_message + chunk
     
-    full_response = "".join(chunks)
+    # 如果没有任何输出（极少情况），返回空消息
+    if full_message is None:
+        return {"messages": [AIMessage(content="")]}
     
-    return {"messages": [AIMessage(content=full_response)]}
+    
+    return {"messages": [full_message]}
