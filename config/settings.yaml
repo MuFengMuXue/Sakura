@@ -2,14 +2,14 @@ llm:
   model: "deepseek-chat"
   temperature: 0.9
   base_url: "https://api.deepseek.com/v1"
-  api_key: "sk-c7e8e2e1550e4e94a76098bb28bf3d47"
+  api_key: ""
 
 embedding:
   use_local_model: false
   model_path: ""
   model: "Qwen/Qwen3-Embedding-0.6B"
   base_url: "https://api.siliconflow.cn/v1"
-  api_key: "sk-cawgctaiwbtwupdyuiwgknegdlhknaabulgtqbipotvogpvc"
+  api_key: ""
   vector_size: 1024
   timeout: 30
   max_retries: 3
