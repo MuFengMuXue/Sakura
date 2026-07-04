@@ -1,43 +1,70 @@
-import json
-from core.state import ChatState
+import aiohttp
+import asyncio
+from core.state import AgentState
 from langchain_core.messages import HumanMessage, AIMessage
-from memos.api.routers.server_router import add_memories
-from memos.api.product_models import APIADDRequest
+
+MEMOS_BASE_URL = "http://127.0.0.1:8004"
 
 
-def add_memories_node(state: ChatState) -> dict:
+async def add_memories_node(state: AgentState) -> dict:
+    """
+    将最后一轮对话写入记忆
+    """
+    user_id = "01"
     messages = state.get("messages",[])
-     
+
     if len(messages)<2:
         return {}
     
     last_msg = messages[-1]
     prev_msg = messages[-2]
 
-    if isinstance(last_msg,AIMessage) and isinstance(prev_msg,HumanMessage):
-        ai_msg = last_msg
-        user_msg = prev_msg
+    if isinstance(last_msg, AIMessage) and isinstance(prev_msg, HumanMessage):
+        user_msg = prev_msg.content
+        ai_msg = last_msg.content
     else:
         return {}
-    
-    if not user_msg or not ai_msg:
+    if user_msg is None or ai_msg is None:
         return {}
+
+    user_msg = str(user_msg)
+    ai_msg = str(ai_msg)
+
     
-    user_msg = str(prev_msg.content) if prev_msg.content is not None else ""
-    ai_msg = str(last_msg.content) if last_msg.content is not None else ""
+    # 缓存更新
+    buffer = list(state.get("memory_buffer", []))
+    buffer.append((user_msg,ai_msg))
+    new_count = len(buffer)
+
+    if new_count >= 5:
+        messages_to_save = []
+        for user , ai in buffer:
+            messages_to_save.append({"role":"user","content":user})
+            messages_to_save.append({"role":"assistant","content":ai})
+        payload = {"messages":messages_to_save,"user_id":user_id}
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.post(
+                    f"{MEMOS_BASE_URL}/add",
+                    json=payload,
+                    timeout=aiohttp.ClientTimeout(total=10, connect=1)
+                ) as resp:
+                    if resp.status == 200:
+                        print("保存成功")
+                    else:
+                        error_text = await resp.text()
+                        print(f"保存失败，状态码: {resp.status}, 错误信息: {error_text}")
+        except Exception as e:
+            print(f"保存失败: {e}")
+        
+        return{
+            "memory_buffer": [],
+            "buffer_count": 0
+        }
+    else:
+        return{
+            "memory_buffer": buffer,
+            "buffer_count": new_count
+        }
     
-    user_id = "b32d0977-435d-4828-a86f-4f47f8b55bca"
-    add_req = APIADDRequest(
-            user_id = user_id,
-            writable_cube_ids = [user_id],
-            messages = [
-                {"role":"user","content":user_msg},
-                {"role":"assistant","content":ai_msg}
-            ],
-            async_mode = "async",
-            mode="fine"
-        )
-    add_rsp = add_memories(add_req)
-    print(f"写入状态{add_rsp}")
-    return {}
 
