@@ -1,23 +1,26 @@
 # api/routes/entities.py
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Query,Depends
 from typing import Optional
 import uuid
 import logging
 
 from ..schemas import ExtractEntitiesRequest
-from ..service_registry import get_service_registry
+from ..service_registry import ServiceRegistry
+from ..dependencies import get_registry
 
 logger = logging.getLogger(__name__)
 router = APIRouter(tags=["Entities"])
 
 @router.post("/entities/extract")
-async def extract_entities(request: ExtractEntitiesRequest):
+async def extract_entities(
+    request: ExtractEntitiesRequest,
+    registry: ServiceRegistry = Depends(get_registry)
+    ):
     """从文本中提取实体和关系
     
     使用 LLM 自动识别文本中的实体和它们之间的关系。
     可选择是否存储到知识图谱。
     """
-    registry = get_service_registry()
     entity_extractor = registry.entity_extractor
     graph = registry.graph
     config = registry.config   
@@ -119,7 +122,9 @@ async def extract_entities(request: ExtractEntitiesRequest):
 @router.post("/extract-all-entities")
 async def extract_entities_from_all_memories(
     dry_run: bool = False,
-    limit: int = 10000
+    limit: int = 10000,
+    registry: ServiceRegistry = Depends(get_registry),
+    user_id: Optional[str] = None,
 ):
     """从所有记忆中批量提取实体和关系，丰富知识图谱
     
@@ -127,7 +132,6 @@ async def extract_entities_from_all_memories(
         dry_run: 是否只预览不执行（True 时只返回预览结果，不修改数据）
         limit: 处理的最大记忆数量
     """
-    registry = get_service_registry()
     qdrant = registry.qdrant
     entity_extractor = registry.entity_extractor
     graph = registry.graph
@@ -161,7 +165,7 @@ async def extract_entities_from_all_memories(
         preview_entities = []
         preview_relations = []
         
-        user_id = request.user_id if request.user_id is not None else config.users.default_user_id
+        user_id = user_id if user_id is not None else config.users.default_user_id
         
         # 2. 逐条处理
         for idx, mem in enumerate(all_memories):
@@ -295,9 +299,12 @@ async def extract_entities_from_all_memories(
         raise HTTPException(status_code=500, detail=f"实体提取失败: {str(e)}")
 
 @router.get("/entities/stats")
-async def get_entity_stats():
+async def get_entity_stats(
+    registry: ServiceRegistry = Depends(get_registry),
+    user_id: Optional[str] = None,
+    
+    ):
     """获取实体统计"""
-    registry = get_service_registry()
     entity_extractor = registry.entity_extractor
     graph = registry.graph
     config = registry.config
@@ -308,7 +315,7 @@ async def get_entity_stats():
     stats = {"status": "enabled"}
     
     if graph and graph.is_available():
-        user_id = request.user_id if request.user_id is not None else config.users.default_user_id
+        user_id = user_id if user_id is not None else config.users.default_user_id
         graph_stats = graph.get_stats(user_id)
         stats.update({
             "entity_count": graph_stats.get('entity_count', 0),

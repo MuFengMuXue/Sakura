@@ -3,29 +3,24 @@ from langchain_openai import ChatOpenAI
 from langchain_core.messages import AIMessage, SystemMessage, AIMessageChunk
 from core.state import AgentState
 from core.tools import memos_add_memory,memos_search_memory
+from core.load_config import get_config ,get_persona
 
 tools = [memos_add_memory, memos_search_memory]
 
 def _load_llm():
-    with open("config/settings.yaml", "r", encoding="utf-8") as f:
-        config = yaml.safe_load(f)
-        llm_cfg = config["llm"]
+    config = get_config()
     return ChatOpenAI(
-        model=llm_cfg["model"],
-        temperature=llm_cfg["temperature"],
-        base_url=llm_cfg["base_url"],
-        api_key=llm_cfg["api_key"],
+        model=config.llm.model,
+        temperature=config.llm.temperature,
+        base_url=config.llm.base_url,
+        api_key=config.llm.api_key,
         streaming=True,
         max_retries=3,
     )
 
-def _load_persona():
-    with open("config/persona.yaml", "r", encoding="utf-8") as f:
-        config = yaml.safe_load(f)
-        return config["persona"]
 
-persona = _load_persona()
 llm = _load_llm().bind_tools(tools)
+persona = get_persona()
 
 async def chat_node(state: AgentState):
     context = state.get("search_context", "")

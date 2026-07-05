@@ -1,17 +1,18 @@
 # api/routes/kb.py
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Query,Depends
 from typing import Optional, List
 import uuid
 from datetime import datetime
 
 from ..schemas import ImportDocumentRequest, ImportBatchRequest
-from ..service_registry import get_service_registry
+from ..service_registry import ServiceRegistry
 from ..utils import encode_text
+from ..dependencies import get_registry
 
 router = APIRouter(tags=["KnowledgeBase"])
 
 @router.post("/kb/import")
-async def import_document(request: ImportDocumentRequest):
+async def import_document(request: ImportDocumentRequest,registry: ServiceRegistry = Depends(get_registry),):
     """导入文档到知识库
     
     支持：
@@ -20,7 +21,6 @@ async def import_document(request: ImportDocumentRequest):
     - Markdown 文件 (.md)
     - 网页 URL (http/https)
     """
-    registry = get_service_registry()
     document_loader = registry.document_loader
     qdrant = registry.qdrant
     
@@ -52,7 +52,7 @@ async def import_document(request: ImportDocumentRequest):
             if not content or len(content) < 10:
                 continue
             
-            vector = await encode_text(content)
+            vector = await encode_text(content,registry)
             memory_id = str(uuid.uuid4())
             payload = {
                 'content': content,

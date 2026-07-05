@@ -1,16 +1,16 @@
 # api/routes/tools.py
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Query,Depends
 from typing import Optional
 
 from ..schemas import RecordToolUsageRequest
-from ..service_registry import get_service_registry
+from ..service_registry import ServiceRegistry
+from ..dependencies import get_registry
 
 router = APIRouter(tags=["Tools"])
 
 @router.delete("/tools/{record_id}")
-async def delete_tool_record(record_id: str):
+async def delete_tool_record(record_id: str,registry: ServiceRegistry = Depends(get_registry),):
     """删除工具使用记录"""
-    registry = get_service_registry()
     tool_memory = registry.tool_memory
     if not tool_memory:
         raise HTTPException(status_code=503, detail="工具记忆未初始化")
@@ -25,9 +25,8 @@ async def delete_tool_record(record_id: str):
         raise HTTPException(status_code=500, detail=str(e))
 
 @router.get("/tools/stats")
-async def get_tool_stats():
+async def get_tool_stats(registry: ServiceRegistry = Depends(get_registry),):
     """获取工具使用统计"""
-    registry = get_service_registry()
     tool_memory = registry.tool_memory
     if not tool_memory:
         return {"status": "disabled", "message": "工具记忆未启用"}
@@ -39,9 +38,8 @@ async def get_tool_stats():
     }
 
 @router.post("/tools/record")
-async def record_tool_usage(request: RecordToolUsageRequest):
+async def record_tool_usage(request: RecordToolUsageRequest,registry: ServiceRegistry = Depends(get_registry),):
     """记录工具使用"""
-    registry = get_service_registry()
     tool_memory = registry.tool_memory
     if not tool_memory:
         raise HTTPException(status_code=503, detail="工具记忆未启用")
@@ -77,10 +75,9 @@ async def record_tool_usage(request: RecordToolUsageRequest):
 @router.get("/tools/frequently-used")
 async def get_frequently_used_tools(
     category: Optional[str] = None,
-    top_k: int = 10
+    top_k: int = 10,registry: ServiceRegistry = Depends(get_registry),
 ):
     """获取常用工具列表"""
-    registry = get_service_registry()
     tool_memory = registry.tool_memory
     if not tool_memory:
         return {"tools": [], "message": "工具记忆未启用"}
@@ -110,10 +107,10 @@ async def get_frequently_used_tools(
 @router.get("/tools/recent")
 async def get_recent_tool_usage(
     tool_name: Optional[str] = None,
-    limit: int = 20
+    limit: int = 20,
+    registry: ServiceRegistry = Depends(get_registry),
 ):
     """获取最近工具使用记录"""
-    registry = get_service_registry()
     tool_memory = registry.tool_memory
     if not tool_memory:
         return {"records": [], "message": "工具记忆未启用"}
@@ -136,9 +133,8 @@ async def get_recent_tool_usage(
     }
 
 @router.get("/tools/suggest/{tool_name}")
-async def suggest_tool_parameters(tool_name: str):
+async def suggest_tool_parameters(tool_name: str,registry: ServiceRegistry = Depends(get_registry),):
     """根据历史使用建议工具参数"""
-    registry = get_service_registry()
     tool_memory = registry.tool_memory
     if not tool_memory:
         return {"suggestions": {}, "message": "工具记忆未启用"}

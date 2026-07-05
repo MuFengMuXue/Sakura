@@ -1,5 +1,5 @@
 # api/routes/memories.py
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Query, Depends
 from typing import Optional, List
 import uuid
 from datetime import datetime
@@ -8,27 +8,32 @@ from ..schemas import (
     AddMemoryRequest, AddRawMemoryRequest, SearchMemoryRequest,
     RawMemoryMessage
 )
-from ..service_registry import get_service_registry
+
 from ..utils import (
     encode_text, extract_memories, update_bm25_index,
     MEMORY_TYPE_WEIGHTS
 )
-from ..service_registry import get_service_registry
+
+from ..dependencies import get_registry
+from ..service_registry import ServiceRegistry
 
 
 router = APIRouter(tags=["Memories"])
 
 
 @router.post("/add")
-async def add_memory(request: AddMemoryRequest):
+async def add_memory(
+    request: AddMemoryRequest,
+    registry: ServiceRegistry = Depends(get_registry)
+):
     
     """添加记忆（LLM 加工版）"""
-    registry = get_service_registry()
     embedder = registry.embedder
     qdrant = registry.qdrant
     preference_memory = registry.preference_memory
     entity_extractor = registry.entity_extractor
     graph = registry.graph
+    config = registry.config
     user_id = request.user_id if request.user_id is not None else config.users.default_user_id
 
     if embedder is None:
@@ -56,7 +61,7 @@ async def add_memory(request: AddMemoryRequest):
     print(f"正在处理 {len(request.messages)} 条对话消息...")
 
     # ========== 1. LLM 提取记忆 ==========
-    processed_result = await extract_memories(full_conversation)
+    processed_result = await extract_memories(full_conversation,registry)
     if processed_result.get("memories"):
         for mem_item in processed_result["memories"]:
             content = mem_item.get("content", "").strip()
@@ -76,7 +81,7 @@ async def add_memory(request: AddMemoryRequest):
                 skipped_count += 1
                 continue
 
-            vector = await encode_text(content)
+            vector = await encode_text(content.registry)
             # 去重检查
             if qdrant and qdrant.is_available():
                 similar = qdrant.find_similar(vector, threshold=0.95, user_id=user_id)
@@ -104,7 +109,7 @@ async def add_memory(request: AddMemoryRequest):
             }
             if qdrant and qdrant.is_available():
                 qdrant.add_memory(memory_id, vector, payload)
-                update_bm25_index(memory_id, content)
+                await update_bm25_index(memory_id, content,registry)
             added_count += 1
             type_label = {'preference': '偏好', 'fact': '事实', 'episodic': '情景',
                           'semantic': '语义', 'procedural': '程序性', 'general': '通用'}.get(memory_type, memory_type)
@@ -197,14 +202,16 @@ async def add_memory(request: AddMemoryRequest):
     }
 
 @router.post("/add_raw")
-async def add_memory_raw(request: AddRawMemoryRequest):
+async def add_memory_raw(
+    request: AddRawMemoryRequest,
+    registry: ServiceRegistry = Depends(get_registry)
+    ):
     """直接添加记忆（不经过 LLM 加工）"""
-    registry = get_service_registry()
     embedder = registry.embedder
     qdrant = registry.qdrant
     graph = registry.graph
     entity_extractor = registry.config.entity_extraction.auto_extract_on_add
-
+    config = registry.config
     if embedder is None:
         raise HTTPException(status_code=500, detail="Embedding 模型未加载")
 
@@ -223,7 +230,7 @@ async def add_memory_raw(request: AddRawMemoryRequest):
             memory_type = "general"
 
         if content and len(content) > 5:
-            vector = await encode_text(content)
+            vector = await encode_text(content,registry)
             if qdrant and qdrant.is_available():
                 similar = qdrant.find_similar(vector, threshold=0.95, user_id=user_id)
                 if similar:
@@ -288,7 +295,7 @@ async def add_memory_raw(request: AddRawMemoryRequest):
             }
             if qdrant and qdrant.is_available():
                 qdrant.add_memory(memory_id, vector, payload)
-                update_bm25_index(memory_id, content)
+                await update_bm25_index(memory_id, content,registry)
             added_count += 1
             type_counts[memory_type] = type_counts.get(memory_type, 0) + 1
 
@@ -304,9 +311,11 @@ async def add_memory_raw(request: AddRawMemoryRequest):
     return result
 
 @router.post("/search")
-async def search_memory(request: SearchMemoryRequest):
+async def search_memory(
+    request: SearchMemoryRequest,
+    registry: ServiceRegistry = Depends(get_registry)
+    ):
     """搜索记忆"""
-    registry = get_service_registry()
     embedder = registry.embedder
     qdrant = registry.qdrant
     bm25 = registry.bm25
@@ -325,7 +334,7 @@ async def search_memory(request: SearchMemoryRequest):
     enable_graph = request.use_graph if request.use_graph is not None else config.search.enable_graph_query
 
     print(f"{request.query[:80]}{'...' if len(request.query) > 80 else ''}")
-    query_vector = await encode_text(request.query)
+    query_vector = await encode_text(request.query,registry)
 
     results_map = {}
 
@@ -527,11 +536,15 @@ async def search_memory(request: SearchMemoryRequest):
     }
 
 @router.get("/list")
-async def list_memories(user_id: Optional[str] = None, limit: int = 100):
+async def list_memories(
+    user_id: Optional[str] = None,
+    limit: int = 100,
+    registry: ServiceRegistry = Depends(get_registry)
+    ):
     """列出记忆"""
-    registry = get_service_registry()
     qdrant = registry.qdrant
-    user_id = request.user_id if request.user_id is not None else config.users.default_user_id
+    config = registry.config
+    user_id = user_id if user_id is not None else config.users.default_user_id
     memories = []
     if qdrant and qdrant.is_available():
         memories = qdrant.get_all_memories(user_id=user_id, limit=limit)
@@ -552,9 +565,11 @@ async def list_memories(user_id: Optional[str] = None, limit: int = 100):
     return {"user_id": user_id, "count": len(results), "memories": results}
 
 @router.delete("/delete/{memory_id}")
-async def delete_memory(memory_id: str):
+async def delete_memory(
+    memory_id: str,
+    registry: ServiceRegistry = Depends(get_registry)
+    ):
     """删除记忆"""
-    registry = get_service_registry()
     qdrant = registry.qdrant
     if qdrant and qdrant.is_available():
         success = qdrant.delete_memory(memory_id)
@@ -583,12 +598,13 @@ async def get_memory_types():
 async def get_memories_by_type(
     memory_type: str,
     user_id: Optional[str] = None,
-    limit: int = Query(default=50, le=200)
+    limit: int = Query(default=50, le=200),
+    registry: ServiceRegistry = Depends(get_registry)
 ):
     """按类型获取记忆"""
-    registry = get_service_registry()
     qdrant = registry.qdrant
-    user_id = request.user_id if request.user_id is not None else config.users.default_user_id
+    config = registry.config
+    user_id = user_id if user_id is not None else config.users.default_user_id
     if not qdrant or not qdrant.is_available():
         return {"memories": [], "message": "存储不可用"}
     valid_types = list(MEMORY_TYPE_WEIGHTS.keys())
@@ -599,9 +615,11 @@ async def get_memories_by_type(
     return {"memory_type": memory_type, "memories": filtered, "count": len(filtered)}
 
 @router.post("/memories/classify")
-async def classify_memory(content: str):
+async def classify_memory(
+    content: str,
+    registry: ServiceRegistry = Depends(get_registry)                
+    ):
     """使用 LLM 对记忆内容进行类型分类"""
-    registry = get_service_registry()
     llm_cfg = registry.config.llm.config
     if not llm_cfg.api_key or not llm_cfg.model or not llm_cfg.base_url:
         raise HTTPException(status_code=503, detail="LLM 未配置")

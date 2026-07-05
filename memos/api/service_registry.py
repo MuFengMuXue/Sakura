@@ -284,7 +284,7 @@ class ServiceRegistry:
             return
         try:
             from .utils.bm25_index import rebuild_bm25_index
-            await rebuild_bm25_index()
+            await rebuild_bm25_index(self.bm25, self.qdrant)
             print("BM25 索引重建完成")
         except Exception as e:
             print(f"BM25 索引重建失败: {e}")
@@ -316,13 +316,3 @@ class ServiceRegistry:
             except:
                 pass
         print("资源清理完成")
-
-
-# ---------- 全局单例 ----------
-_registry: Optional[ServiceRegistry] = None
-
-def get_service_registry() -> ServiceRegistry:
-    global _registry
-    if _registry is None:
-        _registry = ServiceRegistry()
-    return _registry

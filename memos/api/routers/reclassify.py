@@ -1,17 +1,21 @@
 # api/routes/reclassify.py
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Query,Depends
 import uuid
 from datetime import datetime
+from typing import Optional
 
-from ..service_registry import get_service_registry
+from ..service_registry import ServiceRegistry
 from ..utils import encode_text, extract_memories
+from ..dependencies import get_registry
 
 router = APIRouter(tags=["Reclassify"])
 
 @router.post("/reclassify")
 async def reclassify_all_memories(
     dry_run: bool = False,
-    limit: int = 10000
+    limit: int = 10000,
+    user_id: Optional[str] = None,
+    registry: ServiceRegistry = Depends(get_registry),
 ):
     """批量重新分类所有历史记忆
     
@@ -21,7 +25,6 @@ async def reclassify_all_memories(
         dry_run: 是否只预览不执行（True 时只返回预览结果，不修改数据）
         limit: 处理的最大记忆数量
     """
-    registry = get_service_registry()
     qdrant = registry.qdrant
     embedder = registry.embedder
     config = registry.config
@@ -32,7 +35,7 @@ async def reclassify_all_memories(
     if embedder is None:
         raise HTTPException(status_code=500, detail="Embedding 模型未加载")
     
-    user_id = request.user_id if request.user_id is not None else config.users.default_user_id
+    user_id = user_id if user_id is not None else config.users.default_user_id
     
     try:
         # 1. 获取所有记忆
@@ -64,7 +67,7 @@ async def reclassify_all_memories(
             
             try:
                 # 调用 LLM 提取函数
-                result = await extract_memories(original_content)
+                result = await extract_memories(original_content,registry)
                 extracted_memories = result.get('memories', [])
                 
                 if not extracted_memories:
@@ -139,7 +142,7 @@ async def reclassify_all_memories(
         
         for new_mem in new_memories_to_add:
             content = new_mem['content']
-            vector = await encode_text(content)
+            vector = await encode_text(content,registry)
             
             # 去重检查
             similar = qdrant.find_similar(vector, threshold=0.95, user_id=new_mem['user_id'])

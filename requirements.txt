@@ -6,3 +6,6 @@ langgraph-checkpoint-sqlite
 voxcpm
 sounddevice
 fastapi
+qdrant-client
+neo4j
+networkx

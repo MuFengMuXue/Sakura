@@ -1,31 +1,30 @@
 # api/routes/images.py
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Query, Depends
 from typing import Optional
 import logging
 
 from ..schemas import UploadImageRequest
-from ..service_registry import get_service_registry
+from ..service_registry import ServiceRegistry
+from ..dependencies import get_registry
 
 logger = logging.getLogger(__name__)
 router = APIRouter(tags=["Images"])
 
 @router.get("/images/stats")
-async def get_image_stats():
+async def get_image_stats(user_id: Optional[str] = None,registry: ServiceRegistry = Depends(get_registry),):
     """获取图像记忆统计"""
-    registry = get_service_registry()
     image_memory = registry.image_memory
     config = registry.config
     if not image_memory:
         return {"status": "disabled", "message": "图像记忆未启用"}
     
-    user_id = request.user_id if request.user_id is not None else config.users.default_user_id
+    user_id = user_id if user_id is not None else config.users.default_user_id
     stats = image_memory.get_stats(user_id)
     return {"status": "enabled", **stats}
 
 @router.post("/images/upload")
-async def upload_image(request: UploadImageRequest):
+async def upload_image(request: UploadImageRequest,registry: ServiceRegistry = Depends(get_registry),):
     """上传图像"""
-    registry = get_service_registry()
     auto_desc =  registry.config.image.auto_describe
     image_memory = registry.image_memory
     config = registry.config
@@ -63,16 +62,17 @@ async def upload_image(request: UploadImageRequest):
 async def search_images(
     query: str,
     top_k: int = 5,
-    image_type: Optional[str] = None
+    image_type: Optional[str] = None,
+    user_id: Optional[str] = None,
+    registry: ServiceRegistry = Depends(get_registry),
 ):
     """搜索图像"""
-    registry = get_service_registry()
     image_memory = registry.image_memory
     config = registry.config
     if not image_memory:
         return {"images": [], "message": "图像记忆未启用"}
     
-    user_id = request.user_id if request.user_id is not None else config.users.default_user_id
+    user_id = user_id if user_id is not None else config.users.default_user_id
     results = await image_memory.search(
         query=query,
         user_id=user_id,
@@ -87,9 +87,8 @@ async def search_images(
     }
 
 @router.get("/images/{image_id}")
-async def get_image_info(image_id: str):
+async def get_image_info(image_id: str,registry: ServiceRegistry = Depends(get_registry),):
     """获取图像信息"""
-    registry = get_service_registry()
     image_memory = registry.image_memory
     if not image_memory:
         raise HTTPException(status_code=503, detail="图像记忆未启用")
@@ -102,10 +101,10 @@ async def get_image_info(image_id: str):
 @router.get("/images/{image_id}/data")
 async def get_image_data(
     image_id: str,
-    thumbnail: bool = False
+    thumbnail: bool = False,
+    registry: ServiceRegistry = Depends(get_registry),
 ):
     """获取图像数据（Base64）"""
-    registry = get_service_registry()
     image_memory = registry.image_memory
     if not image_memory:
         raise HTTPException(status_code=503, detail="图像记忆未启用")
@@ -120,9 +119,8 @@ async def get_image_data(
     raise HTTPException(status_code=404, detail="图像不存在")
 
 @router.delete("/images/{image_id}")
-async def delete_image(image_id: str):
+async def delete_image(image_id: str,registry: ServiceRegistry = Depends(get_registry),):
     """删除图像"""
-    registry = get_service_registry()
     image_memory = registry.image_memory
     if not image_memory:
         raise HTTPException(status_code=503, detail="图像记忆未启用")
@@ -135,16 +133,17 @@ async def delete_image(image_id: str):
 @router.get("/images")
 async def list_images(
     image_type: Optional[str] = None,
-    limit: int = 50
+    limit: int = 50,
+    user_id: Optional[str] = None,
+    registry: ServiceRegistry = Depends(get_registry),
 ):
     """列出用户的图像"""
-    registry = get_service_registry()
     image_memory = registry.image_memory
     config = registry.config
     if not image_memory:
         return {"images": [], "message": "图像记忆未启用"}
     
-    user_id = request.user_id if request.user_id is not None else config.users.default_user_id
+    user_id = user_id if user_id is not None else config.users.default_user_id
     images = await image_memory.list_images(user_id, image_type, limit)
     
     return {
@@ -154,16 +153,17 @@ async def list_images(
 
 @router.post("/images/regenerate-descriptions")
 async def regenerate_image_descriptions(
-    force: bool = Query(default=False, description="是否强制重新生成所有描述")
+    force: bool = Query(default=False, description="是否强制重新生成所有描述"),
+    user_id: Optional[str] = None,
+    registry: ServiceRegistry = Depends(get_registry),
 ):
     """为没有描述的图片重新生成描述"""
-    registry = get_service_registry()
     image_memory = registry.image_memory
     config = registry.config
     if not image_memory:
         raise HTTPException(status_code=503, detail="图像记忆未启用")
     
-    user_id = request.user_id if request.user_id is not None else config.users.default_user_id
+    user_id = user_id if user_id is not None else config.users.default_user_id
     
     try:
         images = await image_memory.list_images(user_id, limit=500)

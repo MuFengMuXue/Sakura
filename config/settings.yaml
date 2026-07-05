@@ -1,5 +1,5 @@
 llm:
-  model: "deepseek-chat"
+  model: "deepseek-v4-flash"
   temperature: 0.9
   base_url: "https://api.deepseek.com/v1"
   api_key: ""
@@ -23,7 +23,7 @@ storage:
   graph:
     enable: true
     type: "networkx"          
-    path: "./data/graph_store.json"
+    path: "./data/networkx/graph_store.json"
 
 search:
   top_k: 4

@@ -30,3 +30,5 @@ VoxCPM2/
 
 #语音文件
 *.wav
+
+*.lock

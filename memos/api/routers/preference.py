@@ -1,19 +1,21 @@
 # api/routes/preferences.py
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Query,Depends
 from typing import Optional
 
 from ..schemas import AddPreferenceRequest, ExtractPreferencesRequest
-from ..service_registry import get_service_registry
+from ..service_registry import ServiceRegistry
+from ..dependencies import get_registry
 
 router = APIRouter(tags=["Preferences"])
 
 @router.get("/preferences")
 async def get_preferences(
     category: Optional[str] = Query(default=None, description="类别过滤"),
-    preference_type: Optional[str] = Query(default=None, description="类型过滤: like/dislike")
+    preference_type: Optional[str] = Query(default=None, description="类型过滤: like/dislike"),
+    registry: ServiceRegistry = Depends(get_registry),
 ):
     """获取用户偏好列表"""
-    registry = get_service_registry()
+
     preference_memory = registry.preference_memory
     if not preference_memory:
         return {"preferences": [], "message": "偏好记忆未初始化"}
@@ -27,16 +29,16 @@ async def get_preferences(
         # 注意：不传 user_id，因为实例化时已绑定
         prefs = await preference_memory.get_preferences(category=cat, preference_type=ptype)
         return {
-            "preferences": [p.dict() for p in prefs],
+            "preferences": [p.model_dump() for p in prefs],
             "count": len(prefs)
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 @router.post("/preferences")
-async def add_preference(request: AddPreferenceRequest):
+async def add_preference(request: AddPreferenceRequest,
+                         registry: ServiceRegistry = Depends(get_registry),):
     """添加用户偏好"""
-    registry = get_service_registry()
     preference_memory = registry.preference_memory
     if not preference_memory:
         raise HTTPException(status_code=503, detail="偏好记忆未初始化")
@@ -52,16 +54,15 @@ async def add_preference(request: AddPreferenceRequest):
         )
         return {
             "status": "success",
-            "preference": pref.dict(),
+            "preference": pref.model_dump(),
             "message": f"已添加偏好: {'喜欢' if request.preference_type == 'like' else '不喜欢'}{request.item}"
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 @router.delete("/preferences/{pref_id}")
-async def delete_preference(pref_id: str):
+async def delete_preference(pref_id: str,registry: ServiceRegistry = Depends(get_registry),):
     """删除偏好"""
-    registry = get_service_registry()
     preference_memory = registry.preference_memory
     if not preference_memory:
         raise HTTPException(status_code=503, detail="偏好记忆未初始化")
@@ -76,9 +77,8 @@ async def delete_preference(pref_id: str):
         raise HTTPException(status_code=500, detail=str(e))
 
 @router.get("/preferences/summary")
-async def get_preference_summary():
+async def get_preference_summary(registry: ServiceRegistry = Depends(get_registry),):
     """获取偏好摘要"""
-    registry = get_service_registry()
     preference_memory = registry.preference_memory
     if not preference_memory:
         return {"summary": {}, "message": "偏好记忆未初始化"}
@@ -90,9 +90,8 @@ async def get_preference_summary():
         raise HTTPException(status_code=500, detail=str(e))
 
 @router.post("/preferences/extract")
-async def extract_preferences(request: ExtractPreferencesRequest):
+async def extract_preferences(request: ExtractPreferencesRequest,registry: ServiceRegistry = Depends(get_registry),):
     """从文本中提取偏好（使用 LLM）"""
-    registry = get_service_registry()
     config = registry.config
     llm_cfg = config.llm.config
     preference_memory = registry.preference_memory
@@ -144,9 +143,8 @@ async def extract_preferences(request: ExtractPreferencesRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 @router.post("/preferences/search")
-async def search_preferences(query: str, top_k: int = 5):
+async def search_preferences(query: str, top_k: int = 5,registry: ServiceRegistry = Depends(get_registry),):
     """搜索相关偏好"""
-    registry = get_service_registry()
     preference_memory = registry.preference_memory
     if not preference_memory:
         return {"preferences": [], "message": "偏好记忆未初始化"}
@@ -154,7 +152,7 @@ async def search_preferences(query: str, top_k: int = 5):
     try:
         prefs = await preference_memory.search_preferences(query, top_k)
         return {
-            "preferences": [p.dict() for p in prefs],
+            "preferences": [p.model_dump() for p in prefs],
             "count": len(prefs)
         }
     except Exception as e:

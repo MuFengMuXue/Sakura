@@ -5,17 +5,17 @@
 import asyncio
 import aiohttp
 from datetime import datetime
-
-from ..service_registry import get_service_registry
+from fastapi import Depends
+from ..dependencies import get_registry
+from ..service_registry import ServiceRegistry
 from .text_encoding import encode_text
 from .bm25_index import update_bm25_index
 
 
-async def merge_memories(keeper_id: str, content_a: str, content_b: str) -> bool:
+async def merge_memories(keeper_id: str, content_a: str, content_b: str,registry: ServiceRegistry = Depends(get_registry)) -> bool:
     """
     使用 LLM 智能合并两条相似记忆
     """
-    registry = get_service_registry()
     llm_cfg = registry.config.llm.config
 
     if not llm_cfg.api_key or not llm_cfg.model or not llm_cfg.base_url:

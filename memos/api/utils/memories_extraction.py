@@ -6,18 +6,18 @@ import json
 import asyncio
 import aiohttp
 from typing import Dict, Any
-
-from ..service_registry import get_service_registry
+from fastapi import Depends
+from ..dependencies import get_registry
+from ..service_registry import ServiceRegistry
 
 VALID_MEMORY_TYPES = ['preference', 'fact', 'episodic', 'semantic', 'procedural', 'general']
 
 
-async def extract_memories(conversation: str) -> Dict[str, Any]:
+async def extract_memories(conversation: str,registry: ServiceRegistry = Depends(get_registry),) -> Dict[str, Any]:
     """
     使用 LLM 从对话中提取结构化记忆
     返回: {"memories": [{"content": "...", "importance": 0.9, "memory_type": "preference", "tags": ["食物"]}]}
     """
-    registry = get_service_registry()
     llm_cfg = registry.config.llm
 
     if not llm_cfg.api_key or not llm_cfg.model or not llm_cfg.base_url:

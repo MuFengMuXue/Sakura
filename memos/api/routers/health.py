@@ -1,12 +1,11 @@
 # api/routes/health.py
-from fastapi import APIRouter
-from ..service_registry import get_service_registry
-
+from fastapi import APIRouter,Depends
+from ..service_registry import ServiceRegistry
+from ..dependencies import get_registry
 router = APIRouter(tags=["Health"])
 
 @router.get("/")
-async def root():
-    registry = get_service_registry()
+async def root(registry: ServiceRegistry = Depends(get_registry),):
     return {
         "service": "MemOS API",
         "version": "2.0.0",
@@ -16,8 +15,7 @@ async def root():
     }
 
 @router.get("/health")
-async def health_check():
-    registry = get_service_registry()
+async def health_check(registry: ServiceRegistry = Depends(get_registry),):
     memory_count = 0
     if registry.qdrant and registry.qdrant.is_available():
         memory_count = registry.qdrant.count_memories()
@@ -30,8 +28,7 @@ async def health_check():
     }
 
 @router.get("/stats")
-async def get_statistics():
-    registry = get_service_registry()
+async def get_statistics(registry: ServiceRegistry = Depends(get_registry),):
     stats = {
         "total_count": 0,
         "today_count": 0,

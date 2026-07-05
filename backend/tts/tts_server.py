@@ -6,18 +6,12 @@ import numpy as np
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 import uvicorn
 from voxcpm import VoxCPM
-<<<<<<< HEAD
-
-# ==========================================
-# 1. 生命周期管理 (解耦模型加载)
-# ==========================================
-=======
 import torch
 torch.set_float32_matmul_precision('high')
 
 # 1. 生命周期管理 (解耦模型加载)
 
->>>>>>> d6fe468
+
 @contextlib.asynccontextmanager
 async def lifespan(app: FastAPI):
     print("TTS 服务已启动，正在后台加载模型...")
@@ -33,13 +27,8 @@ async def lifespan(app: FastAPI):
 app = FastAPI(lifespan=lifespan)
 
 
-<<<<<<< HEAD
-# ==========================================
+
 # 2. 核心桥接：同步生成器 -> 异步队列
-# ==========================================
-=======
-# 2. 核心桥接：同步生成器 -> 异步队列
->>>>>>> d6fe468
 def _sync_stream_worker(model, text, params, queue: asyncio.Queue, loop: asyncio.AbstractEventLoop, stop_event: threading.Event):
     """
     这个函数在独立的线程池中运行。
@@ -66,11 +55,7 @@ def _sync_stream_worker(model, text, params, queue: asyncio.Queue, loop: asyncio
                 
             audio_bytes = chunk.astype(np.float32).tobytes()
             
-<<<<<<< HEAD
-            # 🔑 关键：从同步线程安全地向异步队列塞数据
-=======
             # 关键：从同步线程安全地向异步队列塞数据
->>>>>>> d6fe468
             asyncio.run_coroutine_threadsafe(queue.put(audio_bytes), loop)
             
     except Exception as e:
@@ -80,13 +65,8 @@ def _sync_stream_worker(model, text, params, queue: asyncio.Queue, loop: asyncio
         asyncio.run_coroutine_threadsafe(queue.put(None), loop)
 
 
-<<<<<<< HEAD
-# ==========================================
+
 # 3. WebSocket 接口 (纯异步，极速响应)
-# ==========================================
-=======
-# 3. WebSocket 接口 (纯异步，极速响应)
->>>>>>> d6fe468
 @app.websocket("/ws/tts")
 async def tts_stream(ws: WebSocket):
     await ws.accept()
@@ -119,11 +99,8 @@ async def tts_stream(ws: WebSocket):
                 asyncio.to_thread(_sync_stream_worker, app.state.tts_model, text, params, queue, loop, stop_event)
             )
 
-<<<<<<< HEAD
-            # 🚀 真正的流式发送循环
-=======
+
             # 真正的流式发送循环
->>>>>>> d6fe468
             while True:
                 # 阻塞等待队列里的数据（完全不卡事件循环，不占 GIL）
                 audio_bytes = await queue.get()

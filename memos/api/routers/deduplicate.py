@@ -1,9 +1,10 @@
 # api/routes/deduplicate.py
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Depends
 import numpy as np
 from sklearn.metrics.pairwise import cosine_similarity
 
-from ..service_registry import get_service_registry
+from ..dependencies import get_registry
+from ..service_registry import ServiceRegistry
 from ..utils import merge_memories
 
 router = APIRouter(tags=["Deduplicate"])
@@ -11,7 +12,8 @@ router = APIRouter(tags=["Deduplicate"])
 @router.post("/deduplicate")
 async def deduplicate_memories(
     threshold: float = 0.90,
-    by_type: bool = True
+    by_type: bool = True,
+    registry: ServiceRegistry = Depends(get_registry)
 ):
     """去重（支持按记忆类型分组）
     
@@ -21,7 +23,6 @@ async def deduplicate_memories(
                  - True: 只在同类型记忆之间去重（推荐）
                  - False: 全局去重（所有记忆之间比较）
     """
-    registry = get_service_registry()
     qdrant = registry.qdrant
     
     if not qdrant or not qdrant.is_available():
@@ -86,7 +87,8 @@ async def deduplicate_memories(
                         merge_success = await merge_memories(
                             keeper_id=mem_i['id'],
                             content_a=mem_i.get('content', ''),
-                            content_b=mem_j.get('content', '')
+                            content_b=mem_j.get('content', ''),
+                            registry=registry
                         )
                         
                         if merge_success:
@@ -132,7 +134,8 @@ async def deduplicate_memories(
                     merge_success = await merge_memories(
                         keeper_id=mem_i['id'],
                         content_a=mem_i.get('content', ''),
-                        content_b=mem_j.get('content', '')
+                        content_b=mem_j.get('content', ''),
+                        registry=registry
                     )
                     
                     if merge_success:

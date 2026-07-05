@@ -1,18 +1,18 @@
 # api/routes/graph.py
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Query,Depends
 from typing import Optional, List
 import uuid
 
 from ..schemas import AddEntityRequest, AddRelationRequest
-from ..service_registry import get_service_registry
+from ..service_registry import ServiceRegistry
+from ..dependencies import get_registry
 
 router = APIRouter(tags=["Graph"])
 
 # ---------- 统计 ----------
 @router.get("/graph/stats")
-async def get_graph_stats():
+async def get_graph_stats(registry: ServiceRegistry = Depends(get_registry)):
     """获取知识图谱统计"""
-    registry = get_service_registry()
     graph = registry.graph
     if not graph or not graph.is_available():
         return {"status": "disabled", "message": "知识图谱未启用"}
@@ -28,23 +28,26 @@ async def get_graph_stats():
 @router.get("/graph/entities")
 async def list_entities(
     entity_type: Optional[str] = None,
-    limit: int = 50
+    limit: int = 50,
+    user_id: Optional[str] = None,
+    registry: ServiceRegistry = Depends(get_registry)
 ):
     """列出实体"""
-    registry = get_service_registry()
     graph = registry.graph
     config = registry.config
     if not graph or not graph.is_available():
         return {"entities": [], "message": "知识图谱未启用"}
     
-    user_id = request.user_id if request.user_id is not None else config.users.default_user_id
+    user_id = user_id if user_id is not None else config.users.default_user_id
     entities = graph.list_entities(user_id=user_id, entity_type=entity_type, limit=limit)
     return {"entities": entities, "count": len(entities)}
 
 @router.get("/graph/entity/{entity_id}")
-async def get_entity(entity_id: str):
+async def get_entity(
+    entity_id: str,
+    registry: ServiceRegistry = Depends(get_registry)
+    ):
     """获取实体详情"""
-    registry = get_service_registry()
     graph = registry.graph
     if not graph or not graph.is_available():
         raise HTTPException(status_code=503, detail="图数据库未启用")
@@ -56,9 +59,9 @@ async def get_entity(entity_id: str):
         raise HTTPException(status_code=404, detail="实体不存在")
 
 @router.post("/graph/entity")
-async def add_entity(request: AddEntityRequest):
+async def add_entity(request: AddEntityRequest,
+                    registry: ServiceRegistry = Depends(get_registry)):
     """添加实体"""
-    registry = get_service_registry()
     graph = registry.graph
     config = registry.config
     if not graph or not graph.is_available():
@@ -79,9 +82,11 @@ async def add_entity(request: AddEntityRequest):
         raise HTTPException(status_code=500, detail="添加实体失败")
 
 @router.delete("/graph/entity/{entity_id}")
-async def delete_entity(entity_id: str):
+async def delete_entity(
+    entity_id: str,
+    registry: ServiceRegistry = Depends(get_registry)
+    ):
     """删除实体"""
-    registry = get_service_registry()
     graph = registry.graph
     if not graph or not graph.is_available():
         raise HTTPException(status_code=503, detail="图数据库未启用")
@@ -94,9 +99,11 @@ async def delete_entity(entity_id: str):
 
 # ---------- 关系管理 ----------
 @router.post("/graph/relation")
-async def add_relation(request: AddRelationRequest):
+async def add_relation(
+    request: AddRelationRequest,
+    registry: ServiceRegistry = Depends(get_registry)
+  ):
     """添加关系"""
-    registry = get_service_registry()
     graph = registry.graph
     if not graph or not graph.is_available():
         raise HTTPException(status_code=503, detail="图数据库未启用")
@@ -118,10 +125,10 @@ async def add_relation(request: AddRelationRequest):
 @router.get("/graph/entity/{entity_id}/relations")
 async def get_entity_relations(
     entity_id: str,
-    direction: str = Query(default="both", pattern="^(in|out|both)$")
+    direction: str = Query(default="both", pattern="^(in|out|both)$"),
+    registry: ServiceRegistry = Depends(get_registry)
 ):
     """获取实体的所有关系"""
-    registry = get_service_registry()
     graph = registry.graph
     if not graph or not graph.is_available():
         raise HTTPException(status_code=503, detail="图数据库未启用")
@@ -131,25 +138,28 @@ async def get_entity_relations(
 
 # ---------- 图谱搜索 ----------
 @router.post("/graph/search")
-async def graph_search(entity_names: List[str]):
+async def graph_search(
+    entity_names: List[str],
+    user_id: Optional[str] = None,
+    registry: ServiceRegistry = Depends(get_registry)
+    ):
     """根据实体名称搜索图谱"""
-    registry = get_service_registry()
     graph = registry.graph
     config = registry.config
     if not graph or not graph.is_available():
         return {"results": [], "message": "图数据库未启用"}
     
-    user_id = request.user_id if request.user_id is not None else config.users.default_user_id
+    user_id = user_id if user_id is not None else config.users.default_user_id
     results = graph.search_by_entities(entity_names, user_id)
     return {"results": results, "count": len(results)}
 
 @router.post("/graph/query/related")
 async def find_related(
     entity_id: str,
-    max_depth: int = 2
+    max_depth: int = 2,
+    registry: ServiceRegistry = Depends(get_registry)
 ):
     """查找相关实体"""
-    registry = get_service_registry()
     graph = registry.graph
     if not graph or not graph.is_available():
         return {"related": [], "message": "知识图谱未启用"}
@@ -158,9 +168,12 @@ async def find_related(
     return {"entity_id": entity_id, "related": related}
 
 @router.get("/graph/path")
-async def find_path(source_id: str, target_id: str, max_length: int = 5):
+async def find_path(source_id: str, 
+    target_id: str, 
+    max_length: int = 5,
+    registry: ServiceRegistry = Depends(get_registry),
+    ):
     """查找两个实体之间的路径"""
-    registry = get_service_registry()
     graph = registry.graph
     if not graph or not graph.is_available():
         raise HTTPException(status_code=503, detail="图数据库未启用")
@@ -173,15 +186,14 @@ async def find_path(source_id: str, target_id: str, max_length: int = 5):
 
 # ---------- 额外：列出所有关系 ----------
 @router.get("/graph/relations")
-async def list_relations(limit: int = 500):
+async def list_relations(limit: int = 500,user_id: Optional[str] = None,registry: ServiceRegistry = Depends(get_registry),):
     """列出所有关系（用于图谱可视化）"""
-    registry = get_service_registry()
     graph = registry.graph
     config = registry.config
     if not graph or not graph.is_available():
         return {"relations": [], "message": "知识图谱未启用"}
     
-    user_id = request.user_id if request.user_id is not None else config.users.default_user_id
+    user_id = user_id if user_id is not None else config.users.default_user_id
     try:
         relations = graph.list_all_relations(user_id=user_id, limit=limit)
         return {"relations": relations, "count": len(relations)}

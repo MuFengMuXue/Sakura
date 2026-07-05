@@ -2,12 +2,19 @@
 """
 FastAPI 应用入口
 """
+import logging
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from .lifecycle import lifespan
-#from .routes import health  # 稍后我们会创建路由模块
 
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s  %(name)s  %(levelname)s  %(message)s',
+    handlers=[
+        logging.StreamHandler()        # 输出到控制台
+    ]
+)
 
 # 创建 FastAPI 应用实例
 app = FastAPI(

@@ -1,16 +1,21 @@
 # api/routes/feedback.py
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException,Depends
 from datetime import datetime
 import uuid
 
 from ..schemas import MemoryFeedbackRequest
-from ..service_registry import get_service_registry
+from ..service_registry import ServiceRegistry
+from ..dependencies import get_registry
+
 from ..utils import encode_text
 
 router = APIRouter(tags=["Feedback"])
 
 @router.post("/memory/feedback")
-async def submit_memory_feedback(request: MemoryFeedbackRequest):
+async def submit_memory_feedback(
+    request: MemoryFeedbackRequest,
+     registry: ServiceRegistry = Depends(get_registry)
+    ):
     """提交记忆反馈（修正/补充/删除/合并）
     
     feedback_type:
@@ -19,7 +24,6 @@ async def submit_memory_feedback(request: MemoryFeedbackRequest):
     - delete: 标记删除
     - merge: 合并到其他记忆
     """
-    registry = get_service_registry()
     qdrant = registry.qdrant
     
     if not qdrant or not qdrant.is_available():
@@ -37,7 +41,7 @@ async def submit_memory_feedback(request: MemoryFeedbackRequest):
                 raise HTTPException(status_code=400, detail="修正内容不能为空")
             
             # 更新内容
-            new_vector = await encode_text(request.correction)
+            new_vector = await encode_text(request.correction,registry)
             payload = original.get('payload', {})
             payload['content'] = request.correction
             payload['updated_at'] = datetime.now().isoformat()
@@ -105,7 +109,7 @@ async def submit_memory_feedback(request: MemoryFeedbackRequest):
             merged_content = f"{target_content}\n[合并自 {request.memory_id}] {original_content}"
             
             # 更新目标记忆
-            new_vector = await encode_text(merged_content)
+            new_vector = await encode_text(merged_content,registry)
             target_payload = target.get('payload', {})
             target_payload['content'] = merged_content
             target_payload['updated_at'] = datetime.now().isoformat()
@@ -135,9 +139,11 @@ async def submit_memory_feedback(request: MemoryFeedbackRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 @router.get("/memory/{memory_id}/history")
-async def get_memory_history(memory_id: str):
+async def get_memory_history(
+    memory_id: str,
+    registry: ServiceRegistry = Depends(get_registry)
+    ):
     """获取记忆的修改历史"""
-    registry = get_service_registry()
     qdrant = registry.qdrant
     
     if not qdrant or not qdrant.is_available():
