@@ -11,7 +11,7 @@ from typing import List, Dict, Any, Optional
 from datetime import datetime
 
 try:
-    from qdrant_client import QdrantClient
+    from qdrant_client import AsyncQdrantClient
     from qdrant_client.models import (
         VectorParams, Distance, PointStruct,
         Filter, FieldCondition, MatchValue, Range,
@@ -51,41 +51,30 @@ class MemosQdrantClient:
         self.client = None
         self._initialized = False
         
-        if not QDRANT_AVAILABLE:
-            logger.warning("Qdrant 不可用，请安装 qdrant-client")
-            return
         
-        self._init_client()
+    async def initialize(self):
+        """
+        异步初始化
+        """
+        if not QDRANT_AVAILABLE:
+            logger.warning("qdrant不可用，将使用内存模式")
+            return
+        if self.use_memory:
+            self.client = AsyncQdrantClient(location=":memory:")
+        else:
+            os.makedirs(self.path,exist_ok=True)
+            self.client = AsyncQdrantClient(path=self.path)
+        await self._ensure_collection()
+        self._initialized = True
     
-    def _init_client(self):
-        """初始化 Qdrant 客户端"""
-        try:
-            if self.use_memory:
-                # 内存模式
-                self.client = QdrantClient(":memory:")
-                logger.info("Qdrant 内存模式已启动")
-            else:
-                # 本地持久化模式
-                os.makedirs(self.path, exist_ok=True)
-                self.client = QdrantClient(path=self.path)
-                logger.info(f"Qdrant 本地模式已启动: {self.path}")
-            
-            # 检查并创建集合
-            self._ensure_collection()
-            self._initialized = True
-            
-        except Exception as e:
-            logger.error(f"Qdrant 初始化失败: {e}")
-            raise
-    
-    def _ensure_collection(self):
+    async def _ensure_collection(self):
         """确保集合存在，不存在则创建"""
         try:
-            collections = self.client.get_collections().collections
-            collection_names = [c.name for c in collections]
+            collections_response = await self.client.get_collections()
+            collection_names = [c.name for c in collections_response.collections]
             
             if self.collection_name not in collection_names:
-                self.client.create_collection(
+                await self.client.create_collection(
                     collection_name=self.collection_name,
                     vectors_config=VectorParams(
                         size=self.vector_size,
@@ -95,7 +84,7 @@ class MemosQdrantClient:
                 logger.info(f"创建集合: {self.collection_name}")
                 
                 # 创建索引
-                self._create_payload_indexes()
+                await self._create_payload_indexes()
             else:
                 logger.info(f"集合已存在: {self.collection_name}")
                 
@@ -103,25 +92,25 @@ class MemosQdrantClient:
             logger.error(f"创建集合失败: {e}")
             raise
     
-    def _create_payload_indexes(self):
+    async def _create_payload_indexes(self):
         """创建 Payload 索引以加速过滤查询"""
         try:
             # 用户 ID 索引
-            self.client.create_payload_index(
+            await self.client.create_payload_index(
                 collection_name=self.collection_name,
                 field_name="user_id",
                 field_schema=PayloadSchemaType.KEYWORD
             )
             
             # 记忆类型索引
-            self.client.create_payload_index(
+            await self.client.create_payload_index(
                 collection_name=self.collection_name,
                 field_name="memory_type",
                 field_schema=PayloadSchemaType.KEYWORD
             )
             
             # 标签索引
-            self.client.create_payload_index(
+            await self.client.create_payload_index(
                 collection_name=self.collection_name,
                 field_name="tags",
                 field_schema=PayloadSchemaType.KEYWORD
@@ -138,7 +127,7 @@ class MemosQdrantClient:
     
     # ==================== 记忆操作 ====================
     
-    def add_memory(
+    async def add_memory(
         self,
         memory_id: str,
         vector: List[float],
@@ -164,7 +153,7 @@ class MemosQdrantClient:
             payload.setdefault('created_at', datetime.now().isoformat())
             payload.setdefault('importance', 0.5)
             
-            self.client.upsert(
+            await self.client.upsert(
                 collection_name=self.collection_name,
                 points=[
                     PointStruct(
@@ -181,7 +170,7 @@ class MemosQdrantClient:
             logger.error(f"添加记忆失败: {e}")
             return False
     
-    def add_memories_batch(
+    async def add_memories_batch(
         self,
         memories: List[Dict[str, Any]]
     ) -> int:
@@ -213,7 +202,7 @@ class MemosQdrantClient:
                     )
                 )
             
-            self.client.upsert(
+            await self.client.upsert(
                 collection_name=self.collection_name,
                 points=points
             )
@@ -224,7 +213,7 @@ class MemosQdrantClient:
             logger.error(f"批量添加记忆失败: {e}")
             return 0
     
-    def search(
+    async def search(
         self,
         query_vector: List[float],
         top_k: int = 5,
@@ -296,7 +285,7 @@ class MemosQdrantClient:
                 query_filter = Filter(must=filter_conditions)
             
             # 执行搜索 (qdrant-client >= 1.7 使用 query_points)
-            results = self.client.query_points(
+            results = await self.client.query_points(
                 collection_name=self.collection_name,
                 query=query_vector,
                 limit=top_k,
@@ -327,7 +316,7 @@ class MemosQdrantClient:
             logger.error(f"搜索记忆失败: {e}")
             return []
     
-    def get_memory(self, memory_id: str) -> Optional[Dict[str, Any]]:
+    async def get_memory(self, memory_id: str) -> Optional[Dict[str, Any]]:
         """
         获取单条记忆
         
@@ -341,7 +330,7 @@ class MemosQdrantClient:
             return None
         
         try:
-            results = self.client.retrieve(
+            results = await self.client.retrieve(
                 collection_name=self.collection_name,
                 ids=[memory_id],
                 with_payload=True,
@@ -362,7 +351,7 @@ class MemosQdrantClient:
             logger.error(f"获取记忆失败: {e}")
             return None
     
-    def get_all_memories(
+    async def get_all_memories(
         self,
         user_id: Optional[str] = None,
         limit: int = 100,
@@ -396,7 +385,7 @@ class MemosQdrantClient:
                 )
             
             # 使用 scroll 获取所有记录
-            results, _ = self.client.scroll(
+            results, _ = await self.client.scroll(
                 collection_name=self.collection_name,
                 scroll_filter=query_filter,
                 limit=limit,
@@ -425,7 +414,7 @@ class MemosQdrantClient:
             logger.error(f"获取记忆列表失败: {e}")
             return []
     
-    def update_memory(
+    async def update_memory(
         self,
         memory_id: str,
         payload_updates: Dict[str, Any],
@@ -450,7 +439,7 @@ class MemosQdrantClient:
             payload_updates['updated_at'] = datetime.now().isoformat()
             
             # 更新 payload
-            self.client.set_payload(
+            await self.client.set_payload(
                 collection_name=self.collection_name,
                 points=[memory_id],
                 payload=payload_updates
@@ -459,10 +448,10 @@ class MemosQdrantClient:
             # 如果有新向量，更新向量
             if new_vector:
                 # 获取现有 payload
-                existing = self.get_memory(memory_id)
+                existing = await self.get_memory(memory_id)
                 if existing:
                     merged_payload = {**existing['payload'], **payload_updates}
-                    self.client.upsert(
+                    await self.client.upsert(
                         collection_name=self.collection_name,
                         points=[
                             PointStruct(
@@ -480,7 +469,7 @@ class MemosQdrantClient:
             logger.error(f"更新记忆失败: {e}")
             return False
     
-    def delete_memory(self, memory_id: str) -> bool:
+    async def delete_memory(self, memory_id: str) -> bool:
         """
         删除记忆
         
@@ -494,7 +483,7 @@ class MemosQdrantClient:
             return False
         
         try:
-            self.client.delete(
+            await self.client.delete(
                 collection_name=self.collection_name,
                 points_selector=[memory_id]
             )
@@ -505,7 +494,7 @@ class MemosQdrantClient:
             logger.error(f"删除记忆失败: {e}")
             return False
     
-    def delete_memories_batch(self, memory_ids: List[str]) -> int:
+    async def delete_memories_batch(self, memory_ids: List[str]) -> int:
         """
         批量删除记忆
         
@@ -519,7 +508,7 @@ class MemosQdrantClient:
             return 0
         
         try:
-            self.client.delete(
+            await self.client.delete(
                 collection_name=self.collection_name,
                 points_selector=memory_ids
             )
@@ -532,13 +521,13 @@ class MemosQdrantClient:
     
     # ==================== 统计和维护 ====================
     
-    def get_collection_info(self) -> Dict[str, Any]:
+    async def get_collection_info(self) -> Dict[str, Any]:
         """获取集合信息"""
         if not self.is_available():
             return {}
         
         try:
-            info = self.client.get_collection(self.collection_name)
+            info = await self.client.get_collection(self.collection_name)
             # 兼容新版本 qdrant-client
             points_count = getattr(info, 'points_count', 0) or 0
             vectors_count = getattr(info, 'vectors_count', points_count) or points_count
@@ -554,7 +543,7 @@ class MemosQdrantClient:
             logger.error(f"获取集合信息失败: {e}")
             return {}
     
-    def count_memories(self, user_id: Optional[str] = None) -> int:
+    async def count_memories(self, user_id: Optional[str] = None) -> int:
         """
         统计记忆数量
         
@@ -569,7 +558,7 @@ class MemosQdrantClient:
         
         try:
             if user_id:
-                result = self.client.count(
+                result = await self.client.count(
                     collection_name=self.collection_name,
                     count_filter=Filter(
                         must=[
@@ -582,14 +571,14 @@ class MemosQdrantClient:
                 )
                 return result.count
             else:
-                info = self.client.get_collection(self.collection_name)
+                info =await self.client.get_collection(self.collection_name)
                 return info.points_count
                 
         except Exception as e:
             logger.error(f"统计记忆数量失败: {e}")
             return 0
     
-    def find_similar(
+    async def find_similar(
         self,
         vector: List[float],
         threshold: float = 0.95,
@@ -608,7 +597,7 @@ class MemosQdrantClient:
         Returns:
             最相似的记忆，或 None
         """
-        results = self.search(
+        results = await self.search(
             query_vector=vector,
             top_k=5,
             score_threshold=threshold,
@@ -622,11 +611,11 @@ class MemosQdrantClient:
         
         return None
     
-    def close(self):
+    async def close(self):
         """关闭连接"""
         if self.client:
             try:
-                self.client.close()
+                await self.client.close()
                 logger.info("Qdrant 连接已关闭")
             except:
                 pass
