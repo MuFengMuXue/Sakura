@@ -9,3 +9,4 @@ fastapi
 qdrant-client
 neo4j
 networkx
+aiofiles
