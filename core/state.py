@@ -7,5 +7,3 @@ class AgentState(TypedDict):
     messages: Annotated[List[BaseMessage], add_messages]
     user_id: str
     search_context: Optional[str]
-    memory_buffer : List[tuple[str,str]] = []
-    buffer_count: int = 0

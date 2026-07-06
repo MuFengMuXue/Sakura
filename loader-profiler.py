@@ -4,10 +4,11 @@ import asyncio
 import time
 from core.graph import graph
 from langchain_core.messages import HumanMessage, AIMessageChunk
-
+from core.nodes.add_memories_backend import flush_memories_task
 async def main():
     print("机器人已启动，输入 quit 退出")
     config = {"configurable": {"thread_id": "1"}}
+    asyncio.create_task(flush_memories_task())
     loop = asyncio.get_running_loop()
 
     while True:

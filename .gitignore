@@ -32,3 +32,5 @@ VoxCPM2/
 *.wav
 
 *.lock
+
+settings.yaml
