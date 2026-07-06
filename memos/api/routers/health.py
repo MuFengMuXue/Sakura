@@ -18,7 +18,7 @@ async def root(registry: ServiceRegistry = Depends(get_registry),):
 async def health_check(registry: ServiceRegistry = Depends(get_registry),):
     memory_count = 0
     if registry.qdrant and registry.qdrant.is_available():
-        memory_count = registry.qdrant.count_memories()
+        memory_count = await registry.qdrant.count_memories()
     return {
         "status": "healthy",
         "model_loaded": registry.embedder is not None,
@@ -38,7 +38,7 @@ async def get_statistics(registry: ServiceRegistry = Depends(get_registry),):
         "graph_enabled": registry.graph is not None
     }
     if registry.qdrant and registry.qdrant.is_available():
-        info = registry.qdrant.get_collection_info()
+        info = await registry.qdrant.get_collection_info()
         stats["total_count"] = info.get('points_count', 0)
     if registry.graph and registry.graph.is_available():
         graph_stats = registry.graph.get_stats()

@@ -119,7 +119,7 @@ class ToolMemory:
             return
         
         if self.vector_storage and self.vector_storage.is_available():
-            results = self.vector_storage.get_all_memories(
+            results = await self.vector_storage.get_all_memories(
                 user_id=self.user_id,
                 limit=self.max_records
             )

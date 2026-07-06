@@ -66,7 +66,7 @@ async def import_document(request: ImportDocumentRequest,registry: ServiceRegist
                 'created_at': datetime.now().isoformat()
             }
             
-            qdrant.add_memory(memory_id, vector, payload)
+            await qdrant.add_memory(memory_id, vector, payload)
             memory_ids.append(memory_id)
             imported_count += 1
         

@@ -60,7 +60,7 @@ async def merge_memories(keeper_id: str, content_a: str, content_b: str,registry
 
                         new_vector = await encode_text(merged_content)
 
-                        full_mem = registry.qdrant.get_memory(keeper_id)
+                        full_mem = await registry.qdrant.get_memory(keeper_id)
                         if not full_mem:
                             print(f"找不到记忆 {keeper_id}，合并失败")
                             return False
@@ -70,7 +70,7 @@ async def merge_memories(keeper_id: str, content_a: str, content_b: str,registry
                         keeper_payload['updated_at'] = datetime.now().isoformat()
                         keeper_payload['merge_count'] = keeper_payload.get('merge_count', 0) + 1
 
-                        registry.qdrant.update_memory(keeper_id, keeper_payload, new_vector)
+                        await registry.qdrant.update_memory(keeper_id, keeper_payload, new_vector)
                         update_bm25_index(keeper_id, merged_content)
 
                         print(f"LLM合并成功 (第 {keeper_payload['merge_count']} 次): {merged_content[:50]}...")

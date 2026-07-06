@@ -7,6 +7,8 @@ from typing import Optional
 from ..service_registry import ServiceRegistry
 from ..utils import encode_text, extract_memories
 from ..dependencies import get_registry
+import logging
+logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["Reclassify"])
 
@@ -39,12 +41,12 @@ async def reclassify_all_memories(
     
     try:
         # 1. 获取所有记忆
-        all_memories = qdrant.get_all_memories(limit=limit)
+        all_memories = await qdrant.get_all_memories(limit=limit)
         total_original = len(all_memories)
         
         if total_original == 0:
             return {"status": "success", "message": "没有记忆需要处理"}
-        print(f"开始处理 {total_original} 条历史记忆...")
+        logging.info(f"开始处理 {total_original} 条历史记忆...")
         
         new_memories_to_add = []  # 待添加的新记忆
         original_ids_to_delete = []  # 待删除的原记忆 ID
@@ -63,7 +65,7 @@ async def reclassify_all_memories(
                 skipped_count += 1
                 continue
             
-            print(f"\n[{idx+1}/{total_original}] 处理: {original_content[:50]}...")
+            logging.info(f"\n[{idx+1}/{total_original}] 处理: {original_content[:50]}...")
             
             try:
                 # 调用 LLM 提取函数
@@ -71,7 +73,7 @@ async def reclassify_all_memories(
                 extracted_memories = result.get('memories', [])
                 
                 if not extracted_memories:
-                    print(f"提取失败，保留原记忆")
+                    logging.warning(f"提取失败，保留原记忆")
                     failed_count += 1
                     continue
                 
@@ -101,19 +103,19 @@ async def reclassify_all_memories(
                     
                     type_label = {'preference': '偏好', 'fact': '事实', 'episodic': '情景', 
                                  'semantic': '语义', 'procedural': '程序性', 'general': '通用'}.get(memory_type, memory_type)
-                    print(f"[{type_label}] {new_content[:40]}...")
+                    logging.info(f"[{type_label}] {new_content[:40]}...")
                 
                 # 标记原记忆待删除
                 original_ids_to_delete.append(original_id)
                 
             except Exception as e:
-                print(f"处理失败: {e}")
+                logging.error(f"处理失败: {e}")
                 failed_count += 1
                 continue
         
         # 3. 预览模式 - 只返回结果不执行
         if dry_run:
-            print(f"不执行实际修改")
+            logging.info(f"不执行实际修改")
             
             return {
                 "status": "preview",
@@ -135,7 +137,7 @@ async def reclassify_all_memories(
             }
         
         # 4. 执行模式 - 添加新记忆并删除原记忆
-        print(f"开始写入新记忆...")
+        logging.info(f"开始写入新记忆...")
         
         added_count = 0
         duplicate_skipped = 0
@@ -145,7 +147,7 @@ async def reclassify_all_memories(
             vector = await encode_text(content,registry)
             
             # 去重检查
-            similar = qdrant.find_similar(vector, threshold=0.95, user_id=new_mem['user_id'])
+            similar = await qdrant.find_similar(vector, threshold=0.95, user_id=new_mem['user_id'])
             if similar:
                 duplicate_skipped += 1
                 continue
@@ -165,19 +167,19 @@ async def reclassify_all_memories(
                 'original_id': new_mem.get('original_id')
             }
             
-            qdrant.add_memory(memory_id, vector, payload)
+            await qdrant.add_memory(memory_id, vector, payload)
             added_count += 1
         
         # 删除原记忆
         if original_ids_to_delete:
-            print(f"\n删除 {len(original_ids_to_delete)} 条原记忆...")
-            qdrant.delete_memories_batch(original_ids_to_delete)
+            logging.info(f"\n删除 {len(original_ids_to_delete)} 条原记忆...")
+            await qdrant.delete_memories_batch(original_ids_to_delete)
         
-        print(f"重新分类完成！")
-        print(f"原记忆: {total_original} 条")
-        print(f"新记忆: {added_count} 条")
-        print(f"去重跳过: {duplicate_skipped} 条")
-        print(f"失败: {failed_count} 条")
+        logging.info(f"重新分类完成！")
+        logging.info(f"原记忆: {total_original} 条")
+        logging.info(f"新记忆: {added_count} 条")
+        logging.info(f"去重跳过: {duplicate_skipped} 条")
+        logging.warning(f"失败: {failed_count} 条")
         
         return {
             "status": "success",

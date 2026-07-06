@@ -120,15 +120,17 @@ class MOS:
         
         self._initialized = False
     
-    def initialize(self):
+    async def initialize(self):
         """初始化所有组件"""
         if self._initialized:
             return
         
         logger.info("初始化 MOS...")
         
-        # 初始化向量存储
+        # 同步创建qdrant对象
         self._init_vector_storage()
+        #异步初始化
+        await self.vector_storage.initialize()
         
         # 初始化图存储（如果启用）
         if self.config.neo4j_enabled:
@@ -246,7 +248,7 @@ class MOS:
             添加结果
         """
         if not self._initialized:
-            self.initialize()
+            await self.initialize()
         
         user_id = user_id or self.config.default_user
         tags = tags or []
@@ -279,7 +281,7 @@ class MOS:
         # 存储到向量库
         success = False
         if self.vector_storage and self.vector_storage.is_available():
-            success = self.vector_storage.add_memory(memory_id, vector, payload)
+            success = await self.vector_storage.add_memory(memory_id, vector, payload)
         
         return {
             'success': success,
@@ -313,7 +315,7 @@ class MOS:
             记忆列表
         """
         if not self._initialized:
-            self.initialize()
+            await self.initialize()
         
         user_id = user_id or self.config.default_user
         top_k = top_k or self.config.default_top_k
@@ -325,7 +327,7 @@ class MOS:
         # 向量检索
         results = []
         if self.vector_storage and self.vector_storage.is_available():
-            results = self.vector_storage.search(
+            results = await self.vector_storage.search(
                 query_vector=query_vector,
                 top_k=top_k,
                 score_threshold=similarity_threshold,
@@ -349,10 +351,10 @@ class MOS:
     async def get(self, memory_id: str) -> Optional[Dict[str, Any]]:
         """获取单条记忆"""
         if not self._initialized:
-            self.initialize()
+            await self.initialize()
         
         if self.vector_storage and self.vector_storage.is_available():
-            return self.vector_storage.get_memory(memory_id)
+            return await self.vector_storage.get_memory(memory_id)
         return None
     
     async def get_all(
@@ -362,12 +364,12 @@ class MOS:
     ) -> List[Dict[str, Any]]:
         """获取所有记忆"""
         if not self._initialized:
-            self.initialize()
+            await self.initialize()
         
         user_id = user_id or self.config.default_user
         
         if self.vector_storage and self.vector_storage.is_available():
-            return self.vector_storage.get_all_memories(user_id=user_id, limit=limit)
+            return await self.vector_storage.get_all_memories(user_id=user_id, limit=limit)
         return []
     
     async def update(
@@ -380,7 +382,7 @@ class MOS:
     ) -> bool:
         """更新记忆"""
         if not self._initialized:
-            self.initialize()
+            await self.initialize()
         
         updates = {}
         new_vector = None
@@ -396,7 +398,7 @@ class MOS:
         updates.update(kwargs)
         
         if self.vector_storage and self.vector_storage.is_available():
-            return self.vector_storage.update_memory(
+            return await self.vector_storage.update_memory(
                 memory_id, updates, new_vector
             )
         return False
@@ -404,10 +406,10 @@ class MOS:
     async def delete(self, memory_id: str) -> bool:
         """删除记忆"""
         if not self._initialized:
-            self.initialize()
+            await self.initialize()
         
         if self.vector_storage and self.vector_storage.is_available():
-            return self.vector_storage.delete_memory(memory_id)
+            return await self.vector_storage.delete_memory(memory_id)
         return False
     
     # ==================== 辅助方法 ====================
@@ -608,7 +610,7 @@ class MOS:
             
             # 4. 从向量库获取这些记忆的详细信息
             for memory_id in memory_ids[:top_k * 2]:
-                memory = self.vector_storage.get_memory(memory_id)
+                memory = await self.vector_storage.get_memory(memory_id)
                 if memory:
                     # 添加图增强标记
                     memory['graph_enhanced'] = True
@@ -678,7 +680,7 @@ class MOS:
     async def get_stats(self, user_id: Optional[str] = None) -> Dict[str, Any]:
         """获取统计信息"""
         if not self._initialized:
-            self.initialize()
+            await self.initialize()
         
         user_id = user_id or self.config.default_user
         
@@ -689,7 +691,7 @@ class MOS:
         }
         
         if self.vector_storage and self.vector_storage.is_available():
-            stats['total_memories'] = self.vector_storage.count_memories(user_id)
+            stats['total_memories'] = await self.vector_storage.count_memories(user_id)
         
         if self.graph_storage and self.graph_storage.is_available():
             graph_stats = self.graph_storage.get_stats(user_id)
@@ -698,9 +700,9 @@ class MOS:
         
         return stats
     
-    def close(self):
+    async def close(self):
         """关闭连接"""
         if self.vector_storage:
-            self.vector_storage.close()
+            await self.vector_storage.close()
         if self.graph_storage:
             self.graph_storage.close()

@@ -148,13 +148,13 @@ async def extract_entities_from_all_memories(
     
     try:
         # 1. 获取所有记忆
-        all_memories = qdrant.get_all_memories(limit=limit)
+        all_memories = await qdrant.get_all_memories(limit=limit)
         total_memories = len(all_memories)
         
         if total_memories == 0:
             return {"status": "success", "message": "没有记忆需要处理"}
         
-        print(f"开始从 {total_memories} 条记忆中提取实体...")
+        logger.info(f"开始从 {total_memories} 条记忆中提取实体...")
         
         entities_created = 0
         entities_skipped = 0
@@ -174,16 +174,16 @@ async def extract_entities_from_all_memories(
             if not content or len(content) < 5:
                 continue
             
-            print(f"\n[{idx+1}/{total_memories}] 处理: {content[:50]}...")
+            logger.info(f"\n[{idx+1}/{total_memories}] 处理: {content[:50]}...")
             
             try:
                 entities, relations = await entity_extractor.extract(content)
                 
                 if not entities:
-                    print(f"未发现实体")
+                    logger.warning(f"未发现实体")
                     continue
                 
-                print(f"发现 {len(entities)} 个实体, {len(relations) if relations else 0} 个关系")
+                logger.info(f"发现 {len(entities)} 个实体, {len(relations) if relations else 0} 个关系")
                 
                 for entity in entities:
                     try:
@@ -205,7 +205,7 @@ async def extract_entities_from_all_memories(
                         existing = graph.find_entity_by_name(entity_name, user_id)
                         if existing:
                             entities_skipped += 1
-                            print(f"实体已存在: {entity_name}")
+                            logger.info(f"实体已存在: {entity_name}")
                             continue
                         
                         new_entity_id = str(uuid.uuid4())
@@ -219,7 +219,7 @@ async def extract_entities_from_all_memories(
                         
                         if success:
                             entities_created += 1
-                            print(f"创建实体: {entity_name} [{entity_type}]")
+                            logger.info(f"创建实体: {entity_name} [{entity_type}]")
                         
                     except Exception as ee:
                         logger.warning(f"保存实体失败: {ee}")
@@ -252,19 +252,19 @@ async def extract_entities_from_all_memories(
                                     properties={'description': rel_desc} if rel_desc else {}
                                 )
                                 relations_created += 1
-                                print(f"创建关系: {source_name} --[{relation_type}]--> {target_name}")
+                                logger.info(f"创建关系: {source_name} --[{relation_type}]--> {target_name}")
                                 
                         except Exception as re:
-                            logger.warning(f"保存关系失败: {re}")
+                            logger.error(f"保存关系失败: {re}")
                 
             except Exception as e:
-                print(f"提取失败: {e}")
+                logger.error(f"提取失败: {e}")
                 failed_count += 1
                 continue
         
         # 3. 返回结果
         if dry_run:
-            print(f"不执行实际修改")
+            logger.info(f"不执行实际修改")
             
             return {
                 "status": "preview",
@@ -276,12 +276,12 @@ async def extract_entities_from_all_memories(
                 "sample_entities": preview_entities[:20],
                 "sample_relations": preview_relations[:10]
             }
-        print(f"实体提取完成！")
-        print(f"处理记忆: {total_memories} 条")
-        print(f"创建实体: {entities_created} 个")
-        print(f"跳过已存在: {entities_skipped} 个")
-        print(f"创建关系: {relations_created} 个")
-        print(f"失败: {failed_count} 条")
+        logger.info(f"实体提取完成！")
+        logger.info(f"处理记忆: {total_memories} 条")
+        logger.info(f"创建实体: {entities_created} 个")
+        logger.info(f"跳过已存在: {entities_skipped} 个")
+        logger.info(f"创建关系: {relations_created} 个")
+        logger.info(f"失败: {failed_count} 条")
         
         return {
             "status": "success",

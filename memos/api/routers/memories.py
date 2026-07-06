@@ -81,12 +81,12 @@ async def add_memory(
                 skipped_count += 1
                 continue
 
-            vector = await encode_text(content.registry)
+            vector = await encode_text(content,registry)
             # 去重检查
             if qdrant and qdrant.is_available():
-                similar = qdrant.find_similar(vector, threshold=0.95, user_id=user_id)
+                similar = await qdrant.find_similar(vector, threshold=0.95, user_id=user_id)
                 if similar:
-                    qdrant.update_memory(
+                    await qdrant.update_memory(
                         similar['id'],
                         {
                             'merge_count': similar.get('payload', {}).get('merge_count', 0) + 1,
@@ -108,7 +108,7 @@ async def add_memory(
                 'processed': True
             }
             if qdrant and qdrant.is_available():
-                qdrant.add_memory(memory_id, vector, payload)
+                await qdrant.add_memory(memory_id, vector, payload)
                 await update_bm25_index(memory_id, content,registry)
             added_count += 1
             type_label = {'preference': '偏好', 'fact': '事实', 'episodic': '情景',
@@ -232,7 +232,7 @@ async def add_memory_raw(
         if content and len(content) > 5:
             vector = await encode_text(content,registry)
             if qdrant and qdrant.is_available():
-                similar = qdrant.find_similar(vector, threshold=0.95, user_id=user_id)
+                similar = await qdrant.find_similar(vector, threshold=0.95, user_id=user_id)
                 if similar:
                     continue
 
@@ -294,7 +294,7 @@ async def add_memory_raw(
                 'processed': False
             }
             if qdrant and qdrant.is_available():
-                qdrant.add_memory(memory_id, vector, payload)
+                await qdrant.add_memory(memory_id, vector, payload)
                 await update_bm25_index(memory_id, content,registry)
             added_count += 1
             type_counts[memory_type] = type_counts.get(memory_type, 0) + 1
@@ -340,7 +340,7 @@ async def search_memory(
 
     # 1. Qdrant 向量搜索
     if qdrant and qdrant.is_available():
-        vector_results = qdrant.search(
+        vector_results = await qdrant.search(
             query_vector=query_vector,
             top_k= top_k * 3,
             score_threshold=threshold,
@@ -366,7 +366,7 @@ async def search_memory(
                         results_map[doc_id]['scores']['bm25'] = normalized_score
                     else:
                         # 仅 BM25 找到的，需从 Qdrant 获取完整数据
-                        memory = qdrant.get_memory(doc_id) if qdrant else None
+                        memory = await qdrant.get_memory(doc_id) if qdrant else None
                         if memory and memory.get('payload', {}).get('user_id') == user_id:
                             memory_data = {
                                 'id': doc_id,
@@ -457,7 +457,7 @@ async def search_memory(
                 graph_only_count = 0
                 for mem_id in graph_memory_ids[:5]:
                     if mem_id not in result_ids:
-                        memory = qdrant.get_memory(mem_id)
+                        memory = await qdrant.get_memory(mem_id)
                         if memory and memory.get('payload', {}).get('user_id') == user_id:
                             memory['graph_boost'] = 0.2
                             memory['similarity'] = 0.5
@@ -547,7 +547,7 @@ async def list_memories(
     user_id = user_id if user_id is not None else config.users.default_user_id
     memories = []
     if qdrant and qdrant.is_available():
-        memories = qdrant.get_all_memories(user_id=user_id, limit=limit)
+        memories = await qdrant.get_all_memories(user_id=user_id, limit=limit)
     results = [
         {
             "id": mem.get('id', ''),
@@ -572,7 +572,7 @@ async def delete_memory(
     """删除记忆"""
     qdrant = registry.qdrant
     if qdrant and qdrant.is_available():
-        success = qdrant.delete_memory(memory_id)
+        success = await qdrant.delete_memory(memory_id)
         if success:
             return {"status": "success", "message": f"记忆 {memory_id} 已删除"}
     raise HTTPException(status_code=404, detail=f"记忆 {memory_id} 不存在")
@@ -610,7 +610,7 @@ async def get_memories_by_type(
     valid_types = list(MEMORY_TYPE_WEIGHTS.keys())
     if memory_type not in valid_types:
         raise HTTPException(status_code=400, detail=f"无效的记忆类型。有效类型: {valid_types}")
-    all_memories = qdrant.get_all_memories(user_id=user_id, limit=limit * 3)
+    all_memories = await qdrant.get_all_memories(user_id=user_id, limit=limit * 3)
     filtered = [m for m in all_memories if m.get('memory_type') == memory_type][:limit]
     return {"memory_type": memory_type, "memories": filtered, "count": len(filtered)}
 

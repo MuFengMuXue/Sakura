@@ -16,6 +16,7 @@ async def lifespan(app: FastAPI):
 
     # 1. 创建服务注册表实例（同步初始化所有组件）
     registry = ServiceRegistry()
+    await registry.ainit()
 
     # 2. 存入应用状态，供路由使用
     app.state.registry = registry

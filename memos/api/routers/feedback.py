@@ -8,6 +8,8 @@ from ..service_registry import ServiceRegistry
 from ..dependencies import get_registry
 
 from ..utils import encode_text
+import logging
+logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["Feedback"])
 
@@ -31,7 +33,7 @@ async def submit_memory_feedback(
     
     try:
         # 获取原记忆
-        original = qdrant.get_memory(request.memory_id)
+        original = await qdrant.get_memory(request.memory_id)
         if not original:
             raise HTTPException(status_code=404, detail="记忆不存在")
         
@@ -52,7 +54,7 @@ async def submit_memory_feedback(
                 'reason': request.reason
             })
             
-            qdrant.update_memory(request.memory_id, payload, new_vector)
+            await qdrant.update_memory(request.memory_id, payload, new_vector)
             
             return {
                 "status": "success",
@@ -74,7 +76,7 @@ async def submit_memory_feedback(
             payload['content'] = supplemented_content
             payload['updated_at'] = datetime.now().isoformat()
             
-            qdrant.update_memory(request.memory_id, payload, new_vector)
+            await qdrant.update_memory(request.memory_id, payload, new_vector)
             
             return {
                 "status": "success",
@@ -85,7 +87,7 @@ async def submit_memory_feedback(
         
         elif request.feedback_type == "delete":
             # 标记删除
-            success = qdrant.delete_memory(request.memory_id)
+            success =await qdrant.delete_memory(request.memory_id)
             
             return {
                 "status": "success" if success else "failed",
@@ -99,7 +101,7 @@ async def submit_memory_feedback(
                 raise HTTPException(status_code=400, detail="请指定目标记忆 ID")
             
             target_id = request.correction
-            target = qdrant.get_memory(target_id)
+            target = await qdrant.get_memory(target_id)
             if not target:
                 raise HTTPException(status_code=404, detail="目标记忆不存在")
             
@@ -117,10 +119,10 @@ async def submit_memory_feedback(
             target_payload['merged_from'] = target_payload.get('merged_from', [])
             target_payload['merged_from'].append(request.memory_id)
             
-            qdrant.update_memory(target_id, target_payload, new_vector)
+            await qdrant.update_memory(target_id, target_payload, new_vector)
             
             # 删除原记忆
-            qdrant.delete_memory(request.memory_id)
+            await qdrant.delete_memory(request.memory_id)
             
             return {
                 "status": "success",
@@ -149,7 +151,7 @@ async def get_memory_history(
     if not qdrant or not qdrant.is_available():
         raise HTTPException(status_code=503, detail="存储不可用")
     
-    memory = qdrant.get_memory(memory_id)
+    memory = await qdrant.get_memory(memory_id)
     if not memory:
         raise HTTPException(status_code=404, detail="记忆不存在")
     

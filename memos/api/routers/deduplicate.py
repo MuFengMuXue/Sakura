@@ -6,6 +6,8 @@ from sklearn.metrics.pairwise import cosine_similarity
 from ..dependencies import get_registry
 from ..service_registry import ServiceRegistry
 from ..utils import merge_memories
+import logging
+logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["Deduplicate"])
 
@@ -29,7 +31,7 @@ async def deduplicate_memories(
         return {"status": "error", "message": "存储不可用"}
     
     # 获取所有记忆
-    memories = qdrant.get_all_memories(limit=10000)
+    memories =await qdrant.get_all_memories(limit=10000)
     
     if len(memories) < 2:
         return {"status": "success", "merged_count": 0, "by_type": by_type}
@@ -45,9 +47,9 @@ async def deduplicate_memories(
             mem_type = mem.get('memory_type', 'general')
             type_groups.setdefault(mem_type, []).append(mem)
         
-        print(f"按类型分组去重（阈值: {threshold}）")
+        logger.info(f"按类型分组去重（阈值: {threshold}）")
         for mem_type, group in type_groups.items():
-            print(f"{mem_type}: {len(group)} 条记忆")
+            logger.info(f"{mem_type}: {len(group)} 条记忆")
         
         # 在每个类型组内去重
         for mem_type, group in type_groups.items():
@@ -60,7 +62,7 @@ async def deduplicate_memories(
                 if mem_i['id'] in deleted_ids:
                     continue
                 
-                full_mem_i = qdrant.get_memory(mem_i['id'])
+                full_mem_i =await qdrant.get_memory(mem_i['id'])
                 if not full_mem_i or 'vector' not in full_mem_i:
                     continue
                 
@@ -71,7 +73,7 @@ async def deduplicate_memories(
                     if mem_j['id'] in deleted_ids:
                         continue
                     
-                    full_mem_j = qdrant.get_memory(mem_j['id'])
+                    full_mem_j =await qdrant.get_memory(mem_j['id'])
                     if not full_mem_j or 'vector' not in full_mem_j:
                         continue
                     
@@ -79,9 +81,9 @@ async def deduplicate_memories(
                     similarity = float(cosine_similarity([emb_i], [emb_j])[0][0])
                     
                     if similarity >= threshold:
-                        print(f"[{mem_type}] 发现相似记忆 (相似度: {similarity:.2%})")
-                        print(f"记忆1: {mem_i.get('content', '')[:50]}...")
-                        print(f"记忆2: {mem_j.get('content', '')[:50]}...")
+                        logger.info(f"[{mem_type}] 发现相似记忆 (相似度: {similarity:.2%})")
+                        logger.info(f"记忆1: {mem_i.get('content', '')[:50]}...")
+                        logger.info(f"记忆2: {mem_j.get('content', '')[:50]}...")
                         
                         # 使用 LLM 智能合并
                         merge_success = await merge_memories(
@@ -96,19 +98,19 @@ async def deduplicate_memories(
                             merged_count += 1
                             group_deleted += 1
                         else:
-                            print(f"[{mem_type}] LLM合并失败，两条均保留")
+                            logger.warning(f"[{mem_type}] LLM合并失败，两条均保留")
             
             if group_deleted > 0:
                 type_stats[mem_type] = group_deleted
     else:
         # 全局去重
-        print(f"全局去重（阈值: {threshold}）")
+        logger.info(f"全局去重（阈值: {threshold}）")
         
         for i, mem_i in enumerate(memories):
             if mem_i['id'] in deleted_ids:
                 continue
             
-            full_mem_i = qdrant.get_memory(mem_i['id'])
+            full_mem_i =await qdrant.get_memory(mem_i['id'])
             if not full_mem_i or 'vector' not in full_mem_i:
                 continue
             
@@ -119,7 +121,7 @@ async def deduplicate_memories(
                 if mem_j['id'] in deleted_ids:
                     continue
                 
-                full_mem_j = qdrant.get_memory(mem_j['id'])
+                full_mem_j = await qdrant.get_memory(mem_j['id'])
                 if not full_mem_j or 'vector' not in full_mem_j:
                     continue
                 
@@ -127,9 +129,9 @@ async def deduplicate_memories(
                 similarity = float(cosine_similarity([emb_i], [emb_j])[0][0])
                 
                 if similarity >= threshold:
-                    print(f"发现相似记忆 (相似度: {similarity:.2%})")
-                    print(f"记忆1: {mem_i.get('content', '')[:50]}...")
-                    print(f"记忆2: {mem_j.get('content', '')[:50]}...")
+                    logger.info(f"发现相似记忆 (相似度: {similarity:.2%})")
+                    logger.info(f"记忆1: {mem_i.get('content', '')[:50]}...")
+                    logger.info(f"记忆2: {mem_j.get('content', '')[:50]}...")
                     
                     merge_success = await merge_memories(
                         keeper_id=mem_i['id'],
@@ -142,13 +144,13 @@ async def deduplicate_memories(
                         deleted_ids.add(mem_j['id'])
                         merged_count += 1
                     else:
-                        print(f"LLM合并失败，两条均保留")
+                        logger.error(f"LLM合并失败，两条均保留")
     
     # 删除重复记忆
     if deleted_ids:
-        qdrant.delete_memories_batch(list(deleted_ids))
+        await qdrant.delete_memories_batch(list(deleted_ids))
     
-    print(f"去重完成！合并 {merged_count} 条记忆")
+    logger.info(f"去重完成！合并 {merged_count} 条记忆")
     
     return {
         "status": "success",

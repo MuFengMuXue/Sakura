@@ -34,5 +34,5 @@ async def rebuild_bm25_index(bm25_searcher, qdrant_client):
     if not bm25_searcher:
         return
     if qdrant_client and qdrant_client.is_available():
-        documents = qdrant_client.get_all_memories(limit=10000)
+        documents = await qdrant_client.get_all_memories(limit=10000)
         bm25_searcher.build_index(documents)
