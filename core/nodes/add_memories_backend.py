@@ -40,7 +40,7 @@ async def process_temp_file(temp_path: str) -> bool:
             async with session.post(
                 f"{MEMOS_BASE_URL}/add",
                 json=payload,
-                timeout=aiohttp.ClientTimeout(connect=1)
+                timeout=aiohttp.ClientTimeout(total=120,connect=1)
             ) as resp:
                 if resp.status == 200:
                     logger.info(f"成功发送 {len(rounds)} 轮记忆")

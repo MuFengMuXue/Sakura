@@ -1,5 +1,5 @@
 import fast_langgraph
-fast_langgraph.shim.patch_langgraph()
+#fast_langgraph.shim.patch_langgraph()
 import asyncio
 import time
 from core.graph import graph

@@ -4,6 +4,7 @@
 import os
 import sys
 from typing import Optional
+import asyncio
 
 _project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _project_root not in sys.path:
@@ -15,7 +16,9 @@ import torch
 from storage.qdrant_client import MemosQdrantClient
 from storage.networkx_graph import NetworkXGraphClient
 from storage.neo4j_client import MemosNeo4jClient
-from utils.search_utils import BM25Searcher
+from utils.search_utils import (BM25Searcher,Reranker)
+from .utils.reranker_client import CloudRerankerClient
+
 from memories.preference_memory import PreferenceMemory
 from memories.tool_memory import ToolMemory
 from memories.image_memory import ImageMemory
@@ -32,6 +35,8 @@ class ServiceRegistry:
     
     def __init__(self):
         self.config: AppConfig = get_config()
+        self.memory_evolution = None
+        self.evolution_loop_task = None
         self._create_components()
     
     def _create_components(self):
@@ -44,6 +49,8 @@ class ServiceRegistry:
         self._init_document_loader()
         self._init_scheduler()
         self._init_entity_extractor()
+        self._init_reranker()
+        self._init_evolution()
         self._init_others()
         logger.info("创建完成")
         
@@ -80,6 +87,56 @@ class ServiceRegistry:
                 max_retries=cfg.max_retries,
             )
             logger.info("云端 Embedding 加载完成")
+    
+    def _init_reranker(self):
+        if not self.config.search.enable_reranker:
+            self.reranker = None
+            logger.info("重排序器未启用")
+            return 
+        logger.info("初始化重排序器")
+
+        reranker_cfg = self.config.reranker
+
+        if reranker_cfg.use_local_model:
+            if not reranker_cfg.model_path:
+                logger.warning("model_path为空，回退禁用")
+                self.reranker = None
+                return 
+            try:
+                model_path = reranker_cfg.model_path
+                if not os.path.isabs(model_path):
+                    model_path = os.path.join(_project_root, model_path)
+                model_path = os.path.normpath(model_path)
+            
+            # 初始化本地 CrossEncoder
+                self.reranker = Reranker(model_path)
+                if self.reranker.is_available():
+                    logger.info(f"本地重排序器已加载: {model_path}")
+                else:
+                    logger.warning("本地重排序器不可用，回退禁用")
+                    self.reranker = None
+            except Exception as e:
+                logger.error(f"本地重排序器初始化失败: {e}")
+                self.reranker = None
+            return
+        if not reranker_cfg.base_url or not reranker_cfg.api_key or not reranker_cfg.model:
+            logger.warning("配置缺失,回退禁用")
+            self.reranker = None
+            return 
+        try:
+            timeout = getattr(reranker_cfg,'timeout',30)
+            max_retries = getattr(reranker_cfg,'max_retries',2)
+            self.reranker = CloudRerankerClient(
+            api_key=reranker_cfg.api_key,
+            base_url=reranker_cfg.base_url,
+            model=reranker_cfg.model,
+            timeout=timeout,
+            max_retries=max_retries,
+            rerank_path="/rerank"
+            )
+        except Exception as e:
+            logger.error(f"云端重排序器初始化失败: {e}")
+            self.reranker = None
 
     def _init_qdrant(self):
         logger.info("创建 Qdrant实例...")
@@ -89,7 +146,7 @@ class ServiceRegistry:
             if not os.path.isabs(path):
                 path = os.path.join(_project_root, path)
             path = os.path.normpath(path)
-            vector_size = self.config.storage.vector.vector_size   # 统一从 embedding 取
+            vector_size = self.config.storage.vector.vector_size   
             collection_name = vec_cfg.collection_name
             self.qdrant = MemosQdrantClient(
                 path=path,
@@ -240,6 +297,25 @@ class ServiceRegistry:
             logger.error(f"实体提取器初始化失败: {e}")
             self.entity_extractor = None
     
+    def _init_evolution(self):
+        if not self.config.evolution.enable:
+            self.memory_evolution = None
+            logger.info("记忆演化未启用")
+            return 
+        if not self.qdrant or not self.qdrant.is_available():
+            logger.warning("qdrant不可用，无法初始化演化引擎")
+            return 
+        try:
+            from core.evolution import MemoryEvolution
+            self.memory_evolution = MemoryEvolution(
+            qdrant_client=self.qdrant,
+            config=self.config.evolution.model_dump()
+            )
+            logger.info("记忆自演化引擎已就绪")
+        except Exception as e:
+            logger.error(f"记忆自演化引擎初始化失败: {e}")
+            self.memory_evolution = None
+    
     def _init_others(self):
         pass
 
@@ -266,6 +342,9 @@ class ServiceRegistry:
         
         # 4. 启动调度器
         await self.start_scheduler()
+
+        #启动演化引擎
+        await self.start_evolution_loop()
         
         # 5. 打印最终状态
         self._print_status()
@@ -283,7 +362,7 @@ class ServiceRegistry:
         logger.info(f"Loader:      {'已创建' if self.document_loader else '未创建'}")
         logger.info(f"Scheduler:   {'已创建' if self.scheduler else '未创建'}")
         logger.info(f"Entity:      {'已创建' if self.entity_extractor else '未创建'}")
-    
+        logger.info(f"Reranker:    {'已加载' if self.reranker else '未加载'}")
     # ---------- 异步加载方法 ----------
     async def load_memories(self):
         if self.preference_memory:
@@ -309,8 +388,8 @@ class ServiceRegistry:
         if not self.bm25 or not self.qdrant:
             return
         try:
-            from .utils.bm25_index import rebuild_bm25_index
-            await rebuild_bm25_index(self.bm25, self.qdrant)
+            from .utils.bm25_utils import rebuild_bm25_index
+            await rebuild_bm25_index(self)
             logger.info("BM25 索引重建完成")
         except Exception as e:
             logger.error(f"BM25 索引重建失败: {e}")
@@ -319,12 +398,86 @@ class ServiceRegistry:
         if self.scheduler:
             try:
                 await self.scheduler.start()
+                self.scheduler.register_handler('evolve_memory', self._handle_evolve_memory_task)
                 logger.info("调度器已启动")
             except Exception as e:
                 logger.error(f"调度器启动失败: {e}")
     
+    async def start_evolution_loop(self):
+        """启动记忆演化后台循环"""
+        if not self.config.evolution.enable:
+            return
+        if not self.memory_evolution:
+            logger.warning("记忆演化引擎未初始化，无法启动循环")
+            return
+        if not self.scheduler:
+            logger.warning("调度器未启用，无法启动演化循环")
+            return
+
+        self.evolution_loop_task = asyncio.create_task(
+        self._evolution_periodic_loop()
+        )  
+        logger.info("记忆演化后台循环已启动")
+
+    async def _handle_evolve_memory_task(self, task):
+        """处理记忆自演化任务"""
+        if not self.memory_evolution:
+            return {'status': 'disabled', 'message': '记忆自演化未启用'}
+        payload = task.payload or {}
+        user_id = payload.get('user_id') or self.config.users.default_user_id
+        limit = payload.get('limit', 10000)
+        try:
+            result = await self.memory_evolution.evolve(user_id=user_id, limit=limit)
+             # 演化完成后重建 BM25
+            if self.bm25:
+                await self.rebuild_bm25()
+            # 记录完成时间（使用 evolution.py 中的函数）
+            from .routers.evolution import _record_evolution_completed
+            _record_evolution_completed(result=result)
+            return result
+        except Exception as e:
+            logger.error(f"演化任务执行失败: {e}")
+            return {'status': 'error', 'message': str(e)}
+        
+    async def _evolution_periodic_loop(self):
+        """后台周期性演化循环"""
+        while True:
+            try:
+            # 从路由模块导入状态函数
+                from .routers.evolution import  _seconds_until_next_evolution
+
+                interval = max(int(self.config.evolution.evolve_interval), 60)
+                wait_seconds = _seconds_until_next_evolution(interval)
+
+                if wait_seconds > 0:
+                    await asyncio.sleep(wait_seconds)
+                    continue
+
+            # 提交演化任务到调度器
+                await self.scheduler.submit(
+                    task_type='evolve_memory',
+                    payload={'user_id': self.config.users.default_user_id},
+                    user_id=self.config.users.default_user_id,
+                    timeout=int(self.config.evolution.timeout or 600)
+                )
+                logger.info("已提交到期补跑的记忆演化任务")
+                await asyncio.sleep(5)
+
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                logger.warning(f"周期性记忆演化任务提交失败: {e}")
+                await asyncio.sleep(60)
+
     async def shutdown(self):
         logger.info("正在关闭所有资源...")
+        if self.evolution_loop_task:
+            try:
+                self.evolution_loop_task.cancel()
+                await asyncio.gather(self.evolution_loop_task, return_exceptions=True)
+                logger.info("演化后台循环已停止")
+            except Exception as e:
+                logger.warning(f"停止演化循环失败: {e}")
         if self.scheduler:
             try:
                 await self.scheduler.stop()

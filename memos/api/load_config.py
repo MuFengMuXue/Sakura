@@ -19,11 +19,18 @@ class EmbeddingConfig(BaseModel):
     use_local_model: bool
     model_path: Optional[str] = None
     model: str
-    base_url: str
-    api_key: str
+    base_url: Optional[str] = None
+    api_key: Optional[str] = None
     vector_size: int 
-    timeout: int
-    max_retries: int
+    timeout: Optional[int] = None
+    max_retries: Optional[int] = None
+
+class RerankerConfig(BaseModel):
+    base_url: Optional[str] = None
+    use_local_model: bool
+    model_path: Optional[str] = None
+    model: str
+    api_key: Optional[str] = None
 
 class VectorStorageConfig(BaseModel):
     type: str 
@@ -44,12 +51,19 @@ class StorageConfig(BaseModel):
 class SearchConfig(BaseModel):
     top_k: int 
     similarity_threshold: float
+    enable_reranker: bool
     enable_bm25: bool 
     bm25_weight: float 
     enable_graph_query: bool 
     graph_max_depth: int 
     importance_weight: float 
     type_weight_factor: float 
+    workingmemory: float
+    longtermmemory: float
+    usermemory: float
+    recency_weight: float
+    frequency_weight: float 
+    rerank_topn: int
 
 class EntityExtractionConfig(BaseModel):
     enable: bool 
@@ -77,6 +91,20 @@ class UsersConfig(BaseModel):
     default_user_id: str 
     enable_multi_user: bool 
 
+class EvolutionConfig(BaseModel):
+    enable: bool
+    evolve_interval: Optional[int] = None
+    timeout: Optional[int] = None
+    promote_access: Optional[int] = None
+    promote_importance: Optional[float] = None
+    promote_age_days: Optional[int] = None
+    user_confidence:  Optional[float] = None
+    archive_days: Optional[int] = None
+    archive_importance: Optional[float] = None
+    decay_rate: Optional[float] = None
+    decay_floor: Optional[float] = None
+    merge_threshold: Optional[float] = None
+
 # --- 根配置 ---
 
 class AppConfig(BaseModel):
@@ -89,6 +117,9 @@ class AppConfig(BaseModel):
     image: ImageConfig
     kb: KBConfig
     users: UsersConfig
+    reranker: RerankerConfig
+    evolution: EvolutionConfig
+
 
     @classmethod
     def load_config(cls, yaml_path: Optional[str] = None):

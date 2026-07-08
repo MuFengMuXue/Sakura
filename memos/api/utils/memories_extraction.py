@@ -1,30 +1,56 @@
 """
 记忆提取函数
 """
-import re
-import json
 import asyncio
 import aiohttp
-from typing import Dict, Any
-from fastapi import Depends
-from ..dependencies import get_registry
-from ..service_registry import ServiceRegistry
+from typing import Dict, Any, Optional
+import logging
+
+from .json_utils import build_chat_completion_payload, parse_memories_json
+from .text_utils import normalize_context_summary
+from .time_utils import safe_float
+
+logger = logging.getLogger(__name__)
 
 VALID_MEMORY_TYPES = ['preference', 'fact', 'episodic', 'semantic', 'procedural', 'general']
 
 
-async def extract_memories(conversation: str,registry: ServiceRegistry = Depends(get_registry),) -> Dict[str, Any]:
+async def extract_memories(
+    conversation: str,
+    registry,  # 由调用方传入，不使用 Depends
+    context_summary: Optional[str] = None,
+) -> Dict[str, Any]:
     """
-    使用 LLM 从对话中提取结构化记忆
-    返回: {"memories": [{"content": "...", "importance": 0.9, "memory_type": "preference", "tags": ["食物"]}]}
+    使用 LLM 从对话中提取结构化记忆。
+
+    Args:
+        conversation: 当前对话文本（多轮，含角色标签）
+        registry: 服务注册表（由调用方传入）
+        context_summary: 可选的历史压缩摘要，用于提供背景参考
+
+    Returns:
+        {"memories": [{"content": "...", "importance": 0.9, "memory_type": "preference", "tags": ["食物"]}]}
     """
     llm_cfg = registry.config.llm
 
     if not llm_cfg.api_key or not llm_cfg.model or not llm_cfg.base_url:
-        print("LLM 配置不完整，无法提取记忆")
+        logger.warning("LLM 配置不完整，无法提取记忆")
         return {"memories": []}
 
-    base_url = llm_cfg.base_url.rstrip('/')
+    # 处理摘要
+    context_summary = normalize_context_summary(context_summary)
+    context_summary_section = ""
+    if context_summary:
+        context_summary_section = f"""
+历史压缩摘要（仅供理解当前对话背景）：
+{context_summary}
+
+注意：
+- 历史摘要只用于理解代词、简称、延续话题和人物关系。
+- 不要仅凭历史摘要生成新记忆，也不要把历史摘要整段改写成记忆。
+- 只有当前待总结对话明确提到、确认、更新或修正的信息，才可以提取为记忆。
+- 如果当前对话与历史摘要冲突，以当前对话为准。
+"""
 
     prompt = f"""你是记忆提取专家。从以下多轮对话中提取关键事实，并按类型严格分类。
 
@@ -47,7 +73,9 @@ async def extract_memories(conversation: str,registry: ServiceRegistry = Depends
 
 分类优先级：preference > fact > episodic > procedural > semantic > general
 
-对话内容：
+{context_summary_section}
+
+当前待总结对话：
 {conversation}
 
 请返回 JSON：
@@ -58,75 +86,110 @@ async def extract_memories(conversation: str,registry: ServiceRegistry = Depends
 ]}}
 """
 
-    timeouts = [60, 120]
+    # 读取提取专用的 max_tokens（默认 8000）
+    extract_max_tokens = 8000
+    if hasattr(llm_cfg, 'max_tokens') and llm_cfg.max_tokens:
+        extract_max_tokens = int(llm_cfg.max_tokens)
+
+    base_url = llm_cfg.base_url.rstrip('/')
+    
+    # 超时时间列表（逐步增加）
+    timeouts = [90, 180]
 
     for attempt, timeout_seconds in enumerate(timeouts, 1):
         try:
+            logger.info(f"调用 LLM 提取记忆 (第{attempt}次, 超时{timeout_seconds}s)")
             async with aiohttp.ClientSession() as session:
                 headers = {
                     "Authorization": f"Bearer {llm_cfg.api_key}",
                     "Content-Type": "application/json"
                 }
-                payload = {
-                    "model": llm_cfg.model,
-                    "messages": [{"role": "user", "content": prompt}],
-                    "max_tokens": 2000,
-                    "temperature": 0.3
+
+                # 构建 payload（支持思考模式）
+                model_config = {
+                    'name': '主模型',
+                    'model': llm_cfg.model,
+                    'thinking_mode': getattr(llm_cfg, 'thinking_mode', 'disabled'),
+                    'reasoning_effort': getattr(llm_cfg, 'reasoning_effort', None),
                 }
+                
+                payload = build_chat_completion_payload(
+                    model=llm_cfg.model,
+                    messages=[{"role": "user", "content": prompt}],
+                    max_tokens=extract_max_tokens,
+                    temperature=0.3,
+                    model_config=model_config
+                )
+
                 async with session.post(
                     f"{base_url}/chat/completions",
                     headers=headers,
                     json=payload,
                     timeout=aiohttp.ClientTimeout(total=timeout_seconds)
                 ) as resp:
-                    if resp.status == 200:
-                        result = await resp.json()
-                        response_text = result['choices'][0]['message']['content'].strip()
+                    if resp.status != 200:
+                        error_text = await resp.text()
+                        logger.warning(f"LLM 返回 HTTP {resp.status}: {error_text[:200]}")
+                        continue
 
-                        try:
-                            parsed = json.loads(response_text)
-                        except:
-                            json_match = re.search(r'\{[\s\S]*"memories"[\s\S]*\}', response_text)
-                            if json_match:
-                                parsed = json.loads(json_match.group())
-                            else:
+                    result = await resp.json()
+                    message = result.get('choices', [{}])[0].get('message', {}) or {}
+                    content_text = (message.get('content') or '').strip()
+                    reasoning_text = (message.get('reasoning_content') or '').strip()
+                    usage = result.get('usage', {}) or {}
+                    
+                    logger.info(
+                        f"LLM 调用成功 "
+                        f"(content {len(content_text)}字, reasoning {len(reasoning_text)}字, "
+                        f"completion_tokens={usage.get('completion_tokens', '?')})"
+                    )
+
+                    # 解析响应（优先 content，若为空且 reasoning 有内容则用 reasoning）
+                    memories = parse_memories_json(content_text)
+                    if memories is None and reasoning_text:
+                        logger.info("content 解析失败，改用 reasoning_content")
+                        memories = parse_memories_json(reasoning_text)
+
+                    if memories is None:
+                        preview = (content_text or reasoning_text)[:500].replace('\n', ' | ')
+                        logger.warning(f"无法解析出 memories，原始响应(前500字): {preview}")
+                        continue
+
+                    if not memories:
+                        logger.info("模型返回空 memories（判定为无可记内容）")
+
+                    valid_memories = []
+                    for mem in memories:
+                        if isinstance(mem, dict) and mem.get('content'):
+                            content = str(mem['content']).strip()
+                            if len(content) < 5:
                                 continue
+                            importance = safe_float(mem.get('importance'), 0.5)
+                            importance = max(0.1, min(1.0, importance))
 
-                        memories = parsed.get('memories', [])
-                        valid_memories = []
+                            memory_type = mem.get('memory_type', 'general')
+                            if memory_type not in VALID_MEMORY_TYPES:
+                                memory_type = 'general'
 
-                        for mem in memories:
-                            if isinstance(mem, dict) and mem.get('content'):
-                                content = str(mem['content']).strip()
-                                try:
-                                    importance = float(mem.get('importance', 0.5))
-                                except:
-                                    importance = 0.5
-                                importance = max(0.1, min(1.0, importance))
+                            tags = mem.get('tags', [])
+                            if not isinstance(tags, list):
+                                tags = []
 
-                                memory_type = mem.get('memory_type', 'general')
-                                if memory_type not in VALID_MEMORY_TYPES:
-                                    memory_type = 'general'
+                            valid_memories.append({
+                                "content": content,
+                                "importance": importance,
+                                "memory_type": memory_type,
+                                "tags": tags,
+                            })
 
-                                tags = mem.get('tags', [])
-                                if not isinstance(tags, list):
-                                    tags = []
-
-                                if len(content) >= 5:
-                                    valid_memories.append({
-                                        "content": content,
-                                        "importance": importance,
-                                        "memory_type": memory_type,
-                                        "tags": tags
-                                    })
-
-                        return {"memories": valid_memories}
+                    return {"memories": valid_memories}
 
         except asyncio.TimeoutError:
-            print(f"LLM 调用超时 (尝试 {attempt}/{len(timeouts)})")
+            logger.warning(f"LLM 调用超时 (第{attempt}次, {timeout_seconds}s)")
             continue
         except Exception as e:
-            print(f"LLM 调用失败: {e}")
+            logger.warning(f"LLM 调用失败: {e}")
             continue
 
+    logger.error("LLM 调用全部失败，返回空")
     return {"memories": []}

@@ -10,3 +10,5 @@ from .entity import router as entity_router
 from .deduplicate import router as deduplicate_router
 from .reclassify import router as reclassify_router
 from .kb import router as kb_router
+from .evolution import router as evolution_router
+from .memory_ops import router as memory_ops_router

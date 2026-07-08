@@ -290,7 +290,7 @@ class PreferenceMemory:
         # 构建内容用于向量化
         content = f"用户{'喜欢' if pref.preference_type == PreferenceType.LIKE else '不喜欢'}{pref.item}（{pref.category.value}）"
         
-        vector = await self._encode(content)
+        vector = self._encode(content)
         
         payload = {
             'content': content,
@@ -436,9 +436,9 @@ class PreferenceMemory:
         if not self.vector_storage or not self.vector_storage.is_available():
             return []
         
-        query_vector = await self._encode(query)
+        query_vector = self._encode(query)
         
-        results = await self.vector_storage.search(
+        results = self.vector_storage.search(
             query_vector=query_vector,
             top_k=top_k,
             user_id=self.user_id,
@@ -488,9 +488,8 @@ class PreferenceMemory:
             'by_category': by_category
         }
     
-    async def _encode(self, text: str) -> List[float]:
+    def _encode(self, text: str) -> List[float]:
         """文本编码"""
         if self.embedder:
-            result = await self.embedder.encode([text])
-            return result[0] if result else []
+            return self.embedder.encode([text])[0].tolist()
         return []

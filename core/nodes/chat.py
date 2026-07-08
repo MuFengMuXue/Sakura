@@ -2,10 +2,10 @@ import yaml
 from langchain_openai import ChatOpenAI
 from langchain_core.messages import AIMessage, SystemMessage, AIMessageChunk
 from core.state import AgentState
-from core.tools import memos_add_memory,memos_search_memory
+from core.tools import memos_add_memory,memos_search_memory,memos_correct_memory
 from core.load_config import get_config ,get_persona
 
-tools = [memos_add_memory, memos_search_memory]
+tools = [memos_add_memory, memos_search_memory,memos_correct_memory]
 
 def _load_llm():
     config = get_config()
@@ -35,6 +35,7 @@ async def chat_node(state: AgentState):
 
 请自然地融入这些信息，不要提及"根据记忆"等词语。
 """
+ 
     
     messages = [SystemMessage(content=final_system_prompt)] + state["messages"]
     

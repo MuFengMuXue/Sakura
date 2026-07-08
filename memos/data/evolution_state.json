@@ -1,0 +1,16 @@
+{
+  "last_completed_at": "2026-07-08T16:07:31.344476",
+  "updated_at": "2026-07-08T16:07:31.344476",
+  "last_result": {
+    "status": "success",
+    "user_id": "01",
+    "scanned": 1,
+    "normalized": 0,
+    "promoted_long_term": 0,
+    "promoted_user": 0,
+    "merged": 0,
+    "archived": 0,
+    "decayed": 0,
+    "failed": 0
+  }
+}

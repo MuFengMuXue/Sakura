@@ -14,6 +14,14 @@ embedding:
   timeout: 30
   max_retries: 3
 
+reranker:
+  use_local_model: false
+  model_path: ""
+  model: "BAAI/bge-reranker-v2-m3"
+  base_url: "https://api.siliconflow.cn/v1"
+  api_key: ""
+
+
 storage:
   vector:
     type: "qdrant"
@@ -28,13 +36,20 @@ storage:
 search:
   top_k: 4
   similarity_threshold: 0.4
-  enable_reranker: false
+  enable_reranker: true
   enable_bm25: true
   bm25_weight: 0.3
   enable_graph_query: true
   graph_max_depth: 3
   importance_weight: 0.3
   type_weight_factor: 0.2
+  workingmemory: 0.05
+  longtermmemory: 0.15
+  usermemory: 0.25
+  recency_weight: 0.1
+  frequency_weight: 0.1
+  rerank_topn: 20
+  
 
 entity_extraction:
   enable: true
@@ -61,3 +76,17 @@ kb:
 users:
   default_user_id: "01"
   enable_multi_user: false
+
+evolution:
+  enable: true
+  evolve_interval: 86400
+  timeout: 600
+  promote_access: 3
+  promote_importance: 0.7
+  promote_age_days: 7
+  user_confidence: 0.75
+  archive_days: 60
+  archive_importance: 0.2
+  decay_rate: 0.05
+  decay_floor: 0.1
+  merge_threshold: 0.95

@@ -5,5 +5,4 @@ from typing_extensions import TypedDict
 
 class AgentState(TypedDict):
     messages: Annotated[List[BaseMessage], add_messages]
-    user_id: str
     search_context: Optional[str]

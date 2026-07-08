@@ -45,7 +45,9 @@ from .routers import (
     feedback_router,
     deduplicate_router,
     reclassify_router,
-    kb_router
+    kb_router,
+    evolution_router,
+    memory_ops_router
 
 
 )
@@ -62,6 +64,8 @@ app.include_router(feedback_router)
 app.include_router(deduplicate_router)
 app.include_router(reclassify_router)
 app.include_router(kb_router)
+app.include_router(evolution_router)
+app.include_router(memory_ops_router)
 
 
 # ---------- 启动入口（仅开发环境使用） ----------
