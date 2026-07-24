@@ -15,6 +15,7 @@ def _load_llm():
         base_url=config.llm.base_url,
         api_key=config.llm.api_key,
         streaming=True,
+        extra_body={"enable_thinking": False},   # 正确嵌套
         max_retries=3,
     )
 

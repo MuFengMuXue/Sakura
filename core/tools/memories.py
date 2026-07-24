@@ -6,7 +6,7 @@ import logging
 logger = logging.getLogger(__name__)
 
 
-MEMOS_BASE_URL = "http://127.0.0.1:8004"
+MEMOS_BASE_URL = "http://127.0.0.1:8003"
 DEFAULT_USER_ID = "01"
 
 @tool

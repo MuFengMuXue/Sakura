@@ -164,7 +164,7 @@ class PreferenceMemory:
             return
         
         if self.vector_storage and self.vector_storage.is_available():
-            results = await self.vector_storage.get_all_memories(
+            results = self.vector_storage.get_all_memories(
                 user_id=self.user_id,
                 limit=1000  # 增加限制以加载更多偏好
             )
@@ -308,7 +308,7 @@ class PreferenceMemory:
             'updated_at': pref.last_mentioned_at.isoformat()
         }
         
-        await self.vector_storage.add_memory(pref.id, vector, payload)
+        self.vector_storage.add_memory(pref.id, vector, payload)
     
     async def _link_to_graph(self, pref: PreferenceItem):
         """关联到知识图谱"""
@@ -402,7 +402,7 @@ class PreferenceMemory:
             
             # 从向量库删除
             if self.vector_storage:
-                await self.vector_storage.delete_memory(pref_id)
+                self.vector_storage.delete_memory(pref_id)
             
             # 从图谱删除
             if self.graph_storage:

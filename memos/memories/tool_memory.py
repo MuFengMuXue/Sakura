@@ -119,7 +119,7 @@ class ToolMemory:
             return
         
         if self.vector_storage and self.vector_storage.is_available():
-            results = await self.vector_storage.get_all_memories(
+            results = self.vector_storage.get_all_memories(
                 user_id=self.user_id,
                 limit=self.max_records
             )
@@ -256,7 +256,7 @@ class ToolMemory:
             'created_at': record.used_at.isoformat()
         }
         
-        await self.vector_storage.add_memory(record.id, vector, payload)
+        self.vector_storage.add_memory(record.id, vector, payload)
     
     async def get_tool_preference(
         self,
@@ -349,7 +349,7 @@ class ToolMemory:
         if len(self.usage_records) < original_count:
             # 从向量库删除
             if self.vector_storage:
-                await self.vector_storage.delete_memory(record_id)
+                self.vector_storage.delete_memory(record_id)
             return True
         return False
 

@@ -3,7 +3,7 @@ import asyncio
 from core.state import AgentState
 from langchain_core.messages import HumanMessage
 
-MEMOS_BASE_URL = "http://127.0.0.1:8004"
+MEMOS_BASE_URL = "http://127.0.0.1:8003"
 
 async def search_memories_node(state: AgentState) -> dict:
     """异步记忆检索节点，不阻塞事件循环"""

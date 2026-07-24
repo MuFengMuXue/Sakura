@@ -18,6 +18,8 @@ __pycache__/
 logs/
 *.db
 *.sqlite3
+*.sqlite
+graph_store.json
 
 # 本地临时文件
 *.log
@@ -27,6 +29,12 @@ logs/
 
 #tts模型
 VoxCPM2/
+
+#embedding模型
+Qwen3-Embedding-0.6B/
+
+#reranker模型
+Qwen3-Reranker-0.6B
 
 #语音文件
 *.wav

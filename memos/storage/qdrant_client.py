@@ -1,15 +1,13 @@
-# qdrant_client.py - MemOS Qdrant 向量数据库客户端（异步版本）
+# qdrant_client.py - MemOS Qdrant 向量数据库客户端
 """
 Qdrant 向量数据库客户端封装
 提供记忆的向量存储、检索、更新、删除等功能
-所有 I/O 操作均为异步，使用 asyncio.to_thread 包装同步 Qdrant 调用
 """
 
 import os
-import asyncio
 import uuid
 import logging
-from typing import List, Dict, Any, Optional, Union
+from typing import List, Dict, Any, Optional
 from datetime import datetime
 
 try:
@@ -28,7 +26,7 @@ logger = logging.getLogger(__name__)
 
 
 class MemosQdrantClient:
-    """MemOS 的 Qdrant 向量数据库客户端（异步版本）"""
+    """MemOS 的 Qdrant 向量数据库客户端"""
 
     def __init__(
         self,
@@ -60,44 +58,34 @@ class MemosQdrantClient:
         self._init_client()
 
     def _init_client(self):
-        """同步初始化 Qdrant 客户端（仅创建实例，不执行 I/O）"""
+        """初始化 Qdrant 客户端"""
         try:
             if self.use_memory:
+                # 内存模式
                 self.client = QdrantClient(":memory:")
                 logger.info("Qdrant 内存模式已启动")
             else:
+                # 本地持久化模式
                 os.makedirs(self.path, exist_ok=True)
                 self.client = QdrantClient(path=self.path)
                 logger.info(f"Qdrant 本地模式已启动: {self.path}")
 
+            # 检查并创建集合
+            self._ensure_collection()
             self._initialized = True
 
         except Exception as e:
             logger.error(f"Qdrant 初始化失败: {e}")
             raise
 
-    async def initialize(self):
-        """异步初始化（创建集合和索引）"""
-        if not self.is_available():
-            return False
-        try:
-            await self._ensure_collection()
-            return True
-        except Exception as e:
-            logger.error(f"异步初始化失败: {e}")
-            return False
-
-    async def _ensure_collection(self):
+    def _ensure_collection(self):
         """确保集合存在，不存在则创建"""
         try:
-            collections = await asyncio.to_thread(
-                self.client.get_collections
-            )
-            collection_names = [c.name for c in collections.collections]
+            collections = self.client.get_collections().collections
+            collection_names = [c.name for c in collections]
 
             if self.collection_name not in collection_names:
-                await asyncio.to_thread(
-                    self.client.create_collection,
+                self.client.create_collection(
                     collection_name=self.collection_name,
                     vectors_config=VectorParams(
                         size=self.vector_size,
@@ -105,17 +93,24 @@ class MemosQdrantClient:
                     )
                 )
                 logger.info(f"创建集合: {self.collection_name}")
-                await self._create_payload_indexes()
+
+                # 创建索引
+                self._create_payload_indexes()
             else:
                 logger.info(f"集合已存在: {self.collection_name}")
-                await self._create_payload_indexes()
+                # 旧集合启动时也补建新增 payload 索引（已存在会被安全忽略）
+                self._create_payload_indexes()
 
         except Exception as e:
             logger.error(f"创建集合失败: {e}")
             raise
 
-    async def _create_payload_indexes(self):
-        """创建 Payload 索引以加速过滤查询"""
+    def _create_payload_indexes(self):
+        """创建 Payload 索引以加速过滤查询。
+
+        Qdrant 对已存在索引会抛错；这里逐个创建并降级为 debug，
+        方便老集合在启动时补上 layer/status 索引。
+        """
         index_fields = [
             ("user_id", PayloadSchemaType.KEYWORD),
             ("memory_type", PayloadSchemaType.KEYWORD),
@@ -127,8 +122,7 @@ class MemosQdrantClient:
         created = 0
         for field_name, schema in index_fields:
             try:
-                await asyncio.to_thread(
-                    self.client.create_payload_index,
+                self.client.create_payload_index(
                     collection_name=self.collection_name,
                     field_name=field_name,
                     field_schema=schema
@@ -167,9 +161,9 @@ class MemosQdrantClient:
         payload.setdefault('last_accessed_at', None)
         return payload
 
-    # ==================== 记忆操作（异步） ====================
+    # ==================== 记忆操作 ====================
 
-    async def add_memory(
+    def add_memory(
         self,
         memory_id: str,
         vector: List[float],
@@ -191,10 +185,10 @@ class MemosQdrantClient:
             return False
 
         try:
+            # 确保 payload 包含必要字段和生命周期元数据
             payload = self._prepare_payload_defaults(payload)
 
-            await asyncio.to_thread(
-                self.client.upsert,
+            self.client.upsert(
                 collection_name=self.collection_name,
                 points=[
                     PointStruct(
@@ -211,7 +205,7 @@ class MemosQdrantClient:
             logger.error(f"添加记忆失败: {e}")
             return False
 
-    async def add_memories_batch(
+    def add_memories_batch(
         self,
         memories: List[Dict[str, Any]]
     ) -> int:
@@ -232,6 +226,7 @@ class MemosQdrantClient:
             points = []
             for mem in memories:
                 payload = self._prepare_payload_defaults(mem.get('payload', {}))
+
                 points.append(
                     PointStruct(
                         id=mem['id'],
@@ -240,8 +235,7 @@ class MemosQdrantClient:
                     )
                 )
 
-            await asyncio.to_thread(
-                self.client.upsert,
+            self.client.upsert(
                 collection_name=self.collection_name,
                 points=points
             )
@@ -252,7 +246,7 @@ class MemosQdrantClient:
             logger.error(f"批量添加记忆失败: {e}")
             return 0
 
-    async def search(
+    def search(
         self,
         query_vector: List[float],
         top_k: int = 5,
@@ -276,13 +270,8 @@ class MemosQdrantClient:
             score_threshold: 相似度阈值
             user_id: 用户 ID 过滤
             memory_type: 记忆类型过滤
-            memory_types: 多记忆类型过滤
             tags: 标签过滤
             importance_min: 最低重要度
-            layer: 单层过滤
-            layers: 多层过滤
-            status: 状态过滤
-            include_archived: 是否包含归档
 
         Returns:
             记忆列表，包含 id, content, similarity, payload
@@ -295,7 +284,6 @@ class MemosQdrantClient:
             # 构建过滤条件
             filter_conditions = []
             must_not_conditions = []
-
             if status:
                 filter_conditions.append(
                     FieldCondition(
@@ -359,10 +347,11 @@ class MemosQdrantClient:
                     )
                 )
 
+            # 构建过滤器
             query_filter = Filter(must=filter_conditions, must_not=must_not_conditions)
 
-            results = await asyncio.to_thread(
-                self.client.query_points,
+            # 执行搜索 (qdrant-client >= 1.7 使用 query_points)
+            results = self.client.query_points(
                 collection_name=self.collection_name,
                 query=query_vector,
                 limit=top_k,
@@ -370,6 +359,7 @@ class MemosQdrantClient:
                 query_filter=query_filter
             )
 
+            # 格式化返回结果
             memories = []
             for hit in results.points:
                 payload = hit.payload or {}
@@ -405,7 +395,7 @@ class MemosQdrantClient:
             logger.error(f"搜索记忆失败: {e}")
             return []
 
-    async def get_memory(self, memory_id: str) -> Optional[Dict[str, Any]]:
+    def get_memory(self, memory_id: str) -> Optional[Dict[str, Any]]:
         """
         获取单条记忆
 
@@ -419,8 +409,7 @@ class MemosQdrantClient:
             return None
 
         try:
-            results = await asyncio.to_thread(
-                self.client.retrieve,
+            results = self.client.retrieve(
                 collection_name=self.collection_name,
                 ids=[memory_id],
                 with_payload=True,
@@ -444,7 +433,7 @@ class MemosQdrantClient:
             logger.error(f"获取记忆失败: {e}")
             return None
 
-    async def get_all_memories(
+    def get_all_memories(
         self,
         user_id: Optional[str] = None,
         limit: Optional[int] = None,
@@ -475,7 +464,6 @@ class MemosQdrantClient:
         try:
             filter_conditions = []
             must_not_conditions = []
-
             if user_id:
                 filter_conditions.append(
                     FieldCondition(
@@ -543,8 +531,7 @@ class MemosQdrantClient:
                         break
                     page_limit = min(batch_size, remaining)
 
-                results, next_offset = await asyncio.to_thread(
-                    self.client.scroll,
+                results, next_offset = self.client.scroll(
                     collection_name=self.collection_name,
                     scroll_filter=query_filter,
                     limit=page_limit,
@@ -593,7 +580,7 @@ class MemosQdrantClient:
             logger.error(f"获取记忆列表失败: {e}")
             return []
 
-    async def update_memory(
+    def update_memory(
         self,
         memory_id: str,
         payload_updates: Dict[str, Any],
@@ -614,21 +601,23 @@ class MemosQdrantClient:
             return False
 
         try:
+            # 添加更新时间
             payload_updates['updated_at'] = datetime.now().isoformat()
 
-            await asyncio.to_thread(
-                self.client.set_payload,
+            # 更新 payload
+            self.client.set_payload(
                 collection_name=self.collection_name,
                 points=[memory_id],
                 payload=payload_updates
             )
 
+            # 如果有新向量，更新向量
             if new_vector:
-                existing = await self.get_memory(memory_id)
+                # 获取现有 payload
+                existing = self.get_memory(memory_id)
                 if existing:
                     merged_payload = {**existing['payload'], **payload_updates}
-                    await asyncio.to_thread(
-                        self.client.upsert,
+                    self.client.upsert(
                         collection_name=self.collection_name,
                         points=[
                             PointStruct(
@@ -646,7 +635,7 @@ class MemosQdrantClient:
             logger.error(f"更新记忆失败: {e}")
             return False
 
-    async def delete_memory(self, memory_id: str) -> bool:
+    def delete_memory(self, memory_id: str) -> bool:
         """
         删除记忆
 
@@ -660,8 +649,7 @@ class MemosQdrantClient:
             return False
 
         try:
-            await asyncio.to_thread(
-                self.client.delete,
+            self.client.delete(
                 collection_name=self.collection_name,
                 points_selector=[memory_id]
             )
@@ -672,14 +660,14 @@ class MemosQdrantClient:
             logger.error(f"删除记忆失败: {e}")
             return False
 
-    async def soft_delete_memory(
+    def soft_delete_memory(
         self,
         memory_id: str,
         delete_record_id: Optional[str] = None,
         reason: Optional[str] = None
     ) -> bool:
         """软删除记忆，保留 payload 以便恢复。"""
-        return await self.update_memory(
+        return self.update_memory(
             memory_id,
             {
                 'status': 'deleted',
@@ -689,14 +677,14 @@ class MemosQdrantClient:
             }
         )
 
-    async def archive_memory(
+    def archive_memory(
         self,
         memory_id: str,
         archive_record_id: Optional[str] = None,
         reason: Optional[str] = None
     ) -> bool:
         """归档记忆，保留 payload 且默认从搜索/BM25 中排除。"""
-        return await self.update_memory(
+        return self.update_memory(
             memory_id,
             {
                 'status': 'archived',
@@ -706,9 +694,9 @@ class MemosQdrantClient:
             }
         )
 
-    async def recover_memory(self, memory_id: str) -> bool:
+    def recover_memory(self, memory_id: str) -> bool:
         """恢复软删除或归档的记忆。"""
-        return await self.update_memory(
+        return self.update_memory(
             memory_id,
             {
                 'status': 'active',
@@ -718,9 +706,9 @@ class MemosQdrantClient:
             }
         )
 
-    async def update_usage(self, memory_id: str, increment: int = 1) -> bool:
+    def update_usage(self, memory_id: str, increment: int = 1) -> bool:
         """递增访问计数并刷新最近访问时间。"""
-        memory = await self.get_memory(memory_id)
+        memory = self.get_memory(memory_id)
         if not memory:
             return False
         payload = memory.get('payload', {}) or {}
@@ -728,7 +716,7 @@ class MemosQdrantClient:
             access_count = int(payload.get('access_count', 0) or 0) + increment
         except Exception:
             access_count = increment
-        return await self.update_memory(
+        return self.update_memory(
             memory_id,
             {
                 'access_count': max(access_count, 0),
@@ -736,7 +724,7 @@ class MemosQdrantClient:
             }
         )
 
-    async def delete_memories_batch(self, memory_ids: List[str]) -> int:
+    def delete_memories_batch(self, memory_ids: List[str]) -> int:
         """
         批量删除记忆
 
@@ -750,8 +738,7 @@ class MemosQdrantClient:
             return 0
 
         try:
-            await asyncio.to_thread(
-                self.client.delete,
+            self.client.delete(
                 collection_name=self.collection_name,
                 points_selector=memory_ids
             )
@@ -762,18 +749,16 @@ class MemosQdrantClient:
             logger.error(f"批量删除记忆失败: {e}")
             return 0
 
-    # ==================== 统计和维护（异步） ====================
+    # ==================== 统计和维护 ====================
 
-    async def get_collection_info(self) -> Dict[str, Any]:
+    def get_collection_info(self) -> Dict[str, Any]:
         """获取集合信息"""
         if not self.is_available():
             return {}
 
         try:
-            info = await asyncio.to_thread(
-                self.client.get_collection,
-                self.collection_name
-            )
+            info = self.client.get_collection(self.collection_name)
+            # 兼容新版本 qdrant-client
             points_count = getattr(info, 'points_count', 0) or 0
             vectors_count = getattr(info, 'vectors_count', points_count) or points_count
             status = info.status.value if hasattr(info.status, 'value') else str(info.status)
@@ -788,7 +773,7 @@ class MemosQdrantClient:
             logger.error(f"获取集合信息失败: {e}")
             return {}
 
-    async def count_memories(
+    def count_memories(
         self,
         user_id: Optional[str] = None,
         include_archived: bool = False,
@@ -819,6 +804,9 @@ class MemosQdrantClient:
             return 0
 
         try:
+            # qdrant count 的 MatchValue 只适合精确值。多值过滤交给
+            # get_all_memories 的 payload 后置过滤，避免不同 qdrant-client
+            # 版本对 MatchAny 的兼容差异。
             if memory_types or layers:
                 if memory_types and len(memory_types) == 1 and not memory_type:
                     memory_type = memory_types[0]
@@ -827,7 +815,7 @@ class MemosQdrantClient:
                     layer = layers[0]
                     layers = None
                 if memory_types or layers:
-                    return len(await self.get_all_memories(
+                    return len(self.get_all_memories(
                         user_id=user_id,
                         limit=0,
                         include_deleted=include_deleted,
@@ -841,7 +829,6 @@ class MemosQdrantClient:
 
             must_conditions = []
             must_not_conditions = []
-
             if status:
                 must_conditions.append(
                     FieldCondition(
@@ -864,7 +851,6 @@ class MemosQdrantClient:
                             match=MatchValue(value="archived")
                         )
                     )
-
             if user_id:
                 must_conditions.append(
                     FieldCondition(
@@ -886,9 +872,7 @@ class MemosQdrantClient:
                         match=MatchValue(value=layer)
                     )
                 )
-
-            result = await asyncio.to_thread(
-                self.client.count,
+            result = self.client.count(
                 collection_name=self.collection_name,
                 count_filter=Filter(must=must_conditions, must_not=must_not_conditions)
             )
@@ -898,7 +882,7 @@ class MemosQdrantClient:
             logger.error(f"统计记忆数量失败: {e}")
             return 0
 
-    async def find_similar(
+    def find_similar(
         self,
         vector: List[float],
         threshold: float = 0.95,
@@ -917,7 +901,7 @@ class MemosQdrantClient:
         Returns:
             最相似的记忆，或 None
         """
-        results = await self.search(
+        results = self.search(
             query_vector=vector,
             top_k=5,
             score_threshold=threshold,
@@ -932,7 +916,7 @@ class MemosQdrantClient:
         return None
 
     def close(self):
-        """关闭连接（同步方法）"""
+        """关闭连接"""
         if self.client:
             try:
                 self.client.close()
@@ -940,3 +924,90 @@ class MemosQdrantClient:
             except:
                 pass
 
+
+# ==================== 迁移工具 ====================
+
+def migrate_from_json(
+    json_file: str,
+    qdrant_client: MemosQdrantClient,
+    embedding_model
+) -> int:
+    """
+    从 JSON 文件迁移记忆到 Qdrant
+
+    Args:
+        json_file: JSON 文件路径
+        qdrant_client: Qdrant 客户端
+        embedding_model: 嵌入模型（用于重新生成向量）
+
+    Returns:
+        迁移成功的数量
+    """
+    import json
+
+    if not os.path.exists(json_file):
+        logger.error(f"文件不存在: {json_file}")
+        return 0
+
+    try:
+        with open(json_file, 'r', encoding='utf-8') as f:
+            memories = json.load(f)
+
+        logger.info(f"读取到 {len(memories)} 条记忆")
+
+        migrated = 0
+        batch = []
+        batch_size = 50
+
+        for mem in memories:
+            # 获取或生成向量
+            if 'embedding' in mem and mem['embedding']:
+                vector = mem['embedding']
+            else:
+                # 重新生成向量
+                content = mem.get('content', '')
+                if content:
+                    vector = embedding_model.encode([content])[0].tolist()
+                else:
+                    continue
+
+            # 构建 payload
+            payload = {
+                'content': mem.get('content', ''),
+                'user_id': mem.get('user_id', 'feiniu_default'),
+                'importance': mem.get('importance', 0.5),
+                'memory_type': mem.get('memory_type', 'general'),
+                'tags': mem.get('tags', []),
+                'created_at': mem.get('created_at') or mem.get('timestamp'),
+                'updated_at': mem.get('updated_at'),
+                'merge_count': mem.get('merge_count', 0),
+                'source': 'migrated_from_json'
+            }
+
+            # 生成 ID
+            memory_id = mem.get('id') or f"migrated_{migrated}_{uuid.uuid4().hex[:8]}"
+
+            batch.append({
+                'id': memory_id,
+                'vector': vector,
+                'payload': payload
+            })
+
+            # 批量插入
+            if len(batch) >= batch_size:
+                count = qdrant_client.add_memories_batch(batch)
+                migrated += count
+                batch = []
+                logger.info(f"已迁移 {migrated} 条记忆")
+
+        # 处理剩余
+        if batch:
+            count = qdrant_client.add_memories_batch(batch)
+            migrated += count
+
+        logger.info(f"迁移完成，共 {migrated} 条记忆")
+        return migrated
+
+    except Exception as e:
+        logger.error(f"迁移失败: {e}")
+        return 0

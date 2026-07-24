@@ -79,7 +79,7 @@ class MemoryEvolution:
 
         return left if score(left, left_payload) >= score(right, right_payload) else right
 
-    async def _merge_similar_memories(self, memories, user_id: str, threshold: float) -> Dict[str, int]:
+    def _merge_similar_memories(self, memories, user_id: str, threshold: float) -> Dict[str, int]:
         """按高相似度合并重复记忆：保留一条，归档重复条，并记录 merge 元数据。"""
         stats = {"merged": 0, "failed": 0}
         if threshold <= 0 or not memories:
@@ -92,12 +92,12 @@ class MemoryEvolution:
                 continue
 
             try:
-                full_mem = await self.qdrant_client.get_memory(mem_id)
+                full_mem = self.qdrant_client.get_memory(mem_id)
                 vector = (full_mem or {}).get("vector")
                 if not vector:
                     continue
 
-                similar =await self.qdrant_client.find_similar(
+                similar = self.qdrant_client.find_similar(
                     vector,
                     threshold=threshold,
                     exclude_id=mem_id,
@@ -110,7 +110,7 @@ class MemoryEvolution:
                 if not similar_id or similar_id in archived_ids:
                     continue
 
-                similar_full = await self.qdrant_client.get_memory(similar_id) or similar
+                similar_full = self.qdrant_client.get_memory(similar_id) or similar
                 keeper = self._choose_keeper(full_mem or mem, similar_full)
                 keeper_id = keeper.get("id")
                 duplicate_id = similar_id if keeper_id == mem_id else mem_id
@@ -135,7 +135,7 @@ class MemoryEvolution:
                     "access_count": int(keeper_payload.get("access_count", 0) or 0)
                     + int(duplicate_payload.get("access_count", 0) or 0),
                 }
-                if await self.qdrant_client.update_memory(keeper_id, updates) and await self.qdrant_client.archive_memory(
+                if self.qdrant_client.update_memory(keeper_id, updates) and self.qdrant_client.archive_memory(
                     duplicate_id,
                     reason=f"memory_evolution_merge:{keeper_id}",
                 ):
@@ -156,7 +156,7 @@ class MemoryEvolution:
 
         settings = self._settings()
         now = datetime.now()
-        memories = await self.qdrant_client.get_all_memories(
+        memories = self.qdrant_client.get_all_memories(
             user_id=user_id,
             limit=limit,
             include_archived=False,
@@ -176,7 +176,7 @@ class MemoryEvolution:
             "failed": 0,
         }
 
-        merge_stats = await self._merge_similar_memories(memories, user_id, settings["merge_threshold"])
+        merge_stats = self._merge_similar_memories(memories, user_id, settings["merge_threshold"])
         stats["merged"] += merge_stats["merged"]
         stats["archived"] += merge_stats["merged"]
         stats["failed"] += merge_stats["failed"]
@@ -224,7 +224,7 @@ class MemoryEvolution:
                 and age_days >= settings["archive_days"]
                 and importance < settings["archive_importance"]
             ):
-                ok = await self.qdrant_client.archive_memory(mem_id, reason="memory_evolution")
+                ok = self.qdrant_client.archive_memory(mem_id, reason="memory_evolution")
                 if ok:
                     stats["archived"] += 1
                     continue
@@ -238,7 +238,7 @@ class MemoryEvolution:
                     stats["decayed"] += 1
 
             if updates:
-                ok = await self.qdrant_client.update_memory(mem_id, updates)
+                ok = self.qdrant_client.update_memory(mem_id, updates)
                 if not ok:
                     stats["failed"] += 1
 

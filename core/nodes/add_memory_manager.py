@@ -12,4 +12,4 @@ processing_lock = asyncio.Lock()
 MEMOS_FILE = "memories_01.jsonl"
 TEMP_FILE = MEMOS_FILE + ".processing"
 BATCH_SIZE = 5
-MEMOS_BASE_URL = "http://127.0.0.1:8004"
+MEMOS_BASE_URL = "http://127.0.0.1:8003"

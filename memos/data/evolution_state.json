@@ -1,10 +1,10 @@
 {
-  "last_completed_at": "2026-07-08T16:07:31.344476",
-  "updated_at": "2026-07-08T16:07:31.344476",
+  "last_completed_at": "2026-07-15T13:39:41.552277",
+  "updated_at": "2026-07-15T13:39:41.552277",
   "last_result": {
     "status": "success",
-    "user_id": "01",
-    "scanned": 1,
+    "user_id": "feiniu_default",
+    "scanned": 0,
     "normalized": 0,
     "promoted_long_term": 0,
     "promoted_user": 0,
