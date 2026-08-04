@@ -149,8 +149,8 @@ class MemoryEvolution:
 
         return stats
 
-    async def evolve(self, user_id: str = "feiniu_default", limit: int = 10000) -> Dict[str, Any]:
-        """执行一轮演化。"""
+    def evolve(self, user_id: str = "feiniu_default", limit: int = 10000) -> Dict[str, Any]:
+        """执行一轮演化。（同步：函数体无任何 await，纯 CPU/IO 阻塞，调用方需用 asyncio.to_thread 移出事件循环）"""
         if not self.qdrant_client or not self.qdrant_client.is_available():
             return {"status": "error", "message": "存储不可用"}
 

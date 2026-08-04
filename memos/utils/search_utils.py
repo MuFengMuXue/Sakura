@@ -4,10 +4,21 @@
 """
 
 import logging
+import functools
+import threading
 from typing import List, Dict, Any, Optional, Tuple
 from collections import defaultdict
 
 logger = logging.getLogger(__name__)
+
+
+def _locked(method):
+    """为公开方法加线程锁。BM25 变异（add/remove/build）与 search 并发会错乱，需串行。"""
+    @functools.wraps(method)
+    def wrapper(self, *args, **kwargs):
+        with self._lock:
+            return method(self, *args, **kwargs)
+    return wrapper
 
 # 尝试导入 BM25
 try:
@@ -28,6 +39,7 @@ class BM25Searcher:
         Args:
             tokenizer: 分词函数，默认使用空格分词
         """
+        self._lock = threading.RLock()
         self.tokenizer = tokenizer or self._default_tokenizer
         self.bm25 = None
         self.documents = []
@@ -54,6 +66,7 @@ class BM25Searcher:
         
         return result
     
+    @_locked
     def build_index(
         self,
         documents: List[Dict[str, Any]],
@@ -90,6 +103,7 @@ class BM25Searcher:
         self.bm25 = BM25Okapi(tokenized_docs)
         logger.info(f"BM25 索引构建完成，共 {len(documents)} 个文档")
     
+    @_locked
     def search(
         self,
         query: str,
@@ -120,6 +134,7 @@ class BM25Searcher:
         
         return scored_docs[:top_k]
     
+    @_locked
     def add_document(
         self,
         doc_id: str,
@@ -154,6 +169,7 @@ class BM25Searcher:
             self.bm25 = BM25Okapi(tokenized_docs)
             logger.debug(f"BM25 索引已更新，共 {len(self.documents)} 个文档")
 
+    @_locked
     def remove_document(self, doc_id: str, rebuild: bool = True):
         """从索引中移除文档。"""
         if not BM25_AVAILABLE or doc_id not in self.doc_ids:
@@ -168,6 +184,7 @@ class BM25Searcher:
             self.bm25 = BM25Okapi(tokenized_docs) if tokenized_docs else None
             logger.debug(f"BM25 索引已移除文档，共 {len(self.documents)} 个文档")
     
+    @_locked
     def add_documents_batch(
         self,
         documents: List[Dict[str, Any]],
@@ -202,6 +219,7 @@ class BM25Searcher:
             self.bm25 = BM25Okapi(tokenized_docs)
             logger.info(f"BM25 索引批量更新，新增 {added} 个文档，共 {len(self.documents)} 个")
     
+    @_locked
     def is_available(self) -> bool:
         """检查 BM25 是否可用"""
         return BM25_AVAILABLE and self.bm25 is not None

@@ -6,6 +6,7 @@ Qdrant 向量数据库客户端封装
 
 import os
 import uuid
+import threading
 import logging
 from typing import List, Dict, Any, Optional
 from datetime import datetime
@@ -44,6 +45,7 @@ class MemosQdrantClient:
             vector_size: 向量维度
             use_memory: 是否使用内存模式（不持久化）
         """
+        self._lock = threading.RLock()  # 保护读-改-写（update_memory new_vector 分支 / update_usage）
         self.path = path
         self.collection_name = collection_name
         self.vector_size = vector_size
@@ -611,22 +613,23 @@ class MemosQdrantClient:
                 payload=payload_updates
             )
 
-            # 如果有新向量，更新向量
+            # 如果有新向量，更新向量（读-改-写，加锁防并发丢更新）
             if new_vector:
-                # 获取现有 payload
-                existing = self.get_memory(memory_id)
-                if existing:
-                    merged_payload = {**existing['payload'], **payload_updates}
-                    self.client.upsert(
-                        collection_name=self.collection_name,
-                        points=[
-                            PointStruct(
-                                id=memory_id,
-                                vector=new_vector,
-                                payload=merged_payload
-                            )
-                        ]
-                    )
+                with self._lock:
+                    # 获取现有 payload
+                    existing = self.get_memory(memory_id)
+                    if existing:
+                        merged_payload = {**existing['payload'], **payload_updates}
+                        self.client.upsert(
+                            collection_name=self.collection_name,
+                            points=[
+                                PointStruct(
+                                    id=memory_id,
+                                    vector=new_vector,
+                                    payload=merged_payload
+                                )
+                            ]
+                        )
 
             logger.debug(f"更新记忆成功: {memory_id}")
             return True
@@ -708,21 +711,23 @@ class MemosQdrantClient:
 
     def update_usage(self, memory_id: str, increment: int = 1) -> bool:
         """递增访问计数并刷新最近访问时间。"""
-        memory = self.get_memory(memory_id)
-        if not memory:
-            return False
-        payload = memory.get('payload', {}) or {}
-        try:
-            access_count = int(payload.get('access_count', 0) or 0) + increment
-        except Exception:
-            access_count = increment
-        return self.update_memory(
-            memory_id,
-            {
-                'access_count': max(access_count, 0),
-                'last_accessed_at': datetime.now().isoformat()
-            }
-        )
+        # 读-改-写（get_memory → 算新值 → update_memory），加锁防并发丢计数
+        with self._lock:
+            memory = self.get_memory(memory_id)
+            if not memory:
+                return False
+            payload = memory.get('payload', {}) or {}
+            try:
+                access_count = int(payload.get('access_count', 0) or 0) + increment
+            except Exception:
+                access_count = increment
+            return self.update_memory(
+                memory_id,
+                {
+                    'access_count': max(access_count, 0),
+                    'last_accessed_at': datetime.now().isoformat()
+                }
+            )
 
     def delete_memories_batch(self, memory_ids: List[str]) -> int:
         """

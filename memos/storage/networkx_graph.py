@@ -7,6 +7,9 @@
 import os
 import json
 import logging
+import types
+import functools
+import threading
 from typing import List, Dict, Any, Optional, Set
 from datetime import datetime
 
@@ -19,6 +22,15 @@ except ImportError:
 logger = logging.getLogger(__name__)
 
 
+def _locked(method):
+    """为公开方法加线程锁。RLock 允许公开方法之间的嵌套调用（如 create_entity→add_entity）不死锁。"""
+    @functools.wraps(method)
+    def wrapper(self, *args, **kwargs):
+        with self._lock:
+            return method(self, *args, **kwargs)
+    return wrapper
+
+
 class NetworkXGraphClient:
     """轻量级图数据库客户端（基于 NetworkX）"""
     
@@ -29,6 +41,8 @@ class NetworkXGraphClient:
         Args:
             data_path: 图数据持久化路径
         """
+        # 必须在任何公开方法（__init__ 末尾的 get_stats）之前创建，否则装饰器访问 self._lock 会 AttributeError
+        self._lock = threading.RLock()
         self.data_path = data_path
         self.graph = nx.DiGraph()  # 有向图
         self._initialized = False
@@ -1002,6 +1016,13 @@ class NetworkXGraphClient:
         """关闭（保存数据）"""
         self._save_graph()
         logger.info("图数据库已关闭")
+
+
+# 统一给所有公开方法加线程锁（避免逐手贴漏）。私有方法（_load_graph/_save_graph 等）
+# 只会在已持锁的公开方法或 __init__ 内被调用，不装饰。
+for _name, _meth in list(vars(NetworkXGraphClient).items()):
+    if isinstance(_meth, types.FunctionType) and not _name.startswith("_"):
+        setattr(NetworkXGraphClient, _name, _locked(_meth))
 
 
 # 兼容 Neo4j 接口的别名

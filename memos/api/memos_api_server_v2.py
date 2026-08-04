@@ -52,7 +52,7 @@ def _find_project_root() -> Path:
     """Find the repository root from either root/memos_system or plugins-dlc/memos layout."""
     here = Path(__file__).resolve()
     for parent in (here.parent, *here.parents):
-        if (parent / 'core').exists() and (parent / 'backend').exists():
+        if (parent / 'config').exists() and (parent / 'backend').exists():
             return parent
         if (parent / 'backend').exists():
             return parent
@@ -511,6 +511,8 @@ async def startup_event():
     global embedding_model, qdrant_client, neo4j_client, config
     global llm_config, full_config, bm25_searcher, memory_store_backup
     global reranker, memory_evolution, evolution_loop_task, last_evolution_completed_at
+    global _ENCODE_SEM
+    _ENCODE_SEM = asyncio.Semaphore(4)  # 限制 GPU 并发编码，防 VRAM 超卖
 
     print("=" * 60)
     print("  [启动] MemOS 服务（完整集成版 v2.0）")
@@ -860,7 +862,7 @@ async def _handle_add_memory_task(task):
     if not content:
         return {'status': 'error', 'message': '内容为空'}
 
-    vector = encode_text(content)
+    vector = await encode_text_async(content)
     memory_id = str(uuid.uuid4())
 
     qdrant_payload = {
@@ -876,7 +878,7 @@ async def _handle_add_memory_task(task):
     }
 
     if qdrant_client and qdrant_client.is_available():
-        qdrant_client.add_memory(memory_id, vector, qdrant_payload)
+        await asyncio.to_thread(qdrant_client.add_memory, memory_id, vector, qdrant_payload)
         return {'status': 'success', 'memory_id': memory_id}
 
     return {'status': 'error', 'message': '存储不可用'}
@@ -930,7 +932,7 @@ async def _handle_evolve_memory_task(task):
     evolution_submission_pending = False
     evolution_inflight = True
     try:
-        result = await memory_evolution.evolve(user_id=user_id, limit=limit)
+        result = await asyncio.to_thread(memory_evolution.evolve, user_id=user_id, limit=limit)
         if bm25_searcher:
             await rebuild_bm25_index()
         if result.get('status') == 'success':
@@ -1083,7 +1085,7 @@ async def migrate_json_to_qdrant():
 
 
 async def rebuild_bm25_index():
-    """重建 BM25 索引"""
+    """重建 BM25 索引（整体在单次 to_thread 中执行，避免线程内再提交线程）"""
     global bm25_searcher, qdrant_client
 
     if not bm25_searcher:
@@ -1091,8 +1093,10 @@ async def rebuild_bm25_index():
 
     # 从 Qdrant 获取所有文档
     if qdrant_client and qdrant_client.is_available():
-        documents = qdrant_client.get_all_memories(limit=10000)
-        bm25_searcher.build_index(documents)
+        def _rebuild():
+            documents = qdrant_client.get_all_memories(limit=10000)
+            bm25_searcher.build_index(documents)
+        await asyncio.to_thread(_rebuild)
 
 
 def update_bm25_index(memory_id: str, content: str):
@@ -1117,6 +1121,16 @@ def remove_bm25_document(memory_id: str):
             print(f"[警告] BM25 索引移除失败: {e}")
 
 
+async def update_bm25_index_async(memory_id: str, content: str):
+    """异步版：BM25 索引更新移出事件循环。"""
+    await asyncio.to_thread(update_bm25_index, memory_id, content)
+
+
+async def remove_bm25_document_async(memory_id: str):
+    """异步版：BM25 索引移除移出事件循环。"""
+    await asyncio.to_thread(remove_bm25_document, memory_id)
+
+
 # ==================== 工具函数 ====================
 
 def encode_text(text: str) -> List[float]:
@@ -1124,6 +1138,19 @@ def encode_text(text: str) -> List[float]:
     if embedding_model:
         return embedding_model.encode([text])[0].tolist()
     return []
+
+
+# 限制 GPU 并发编码的信号量，防止并发请求把 VRAM 打爆。在 startup_event 里初始化。
+_ENCODE_SEM = None
+
+
+async def encode_text_async(text: str) -> List[float]:
+    """异步编码：移出事件循环 + 限流 GPU 并发。"""
+    sem = _ENCODE_SEM
+    if sem is not None:
+        async with sem:
+            return await asyncio.to_thread(encode_text, text)
+    return await asyncio.to_thread(encode_text, text)
 
 
 def get_storage():
@@ -1151,15 +1178,16 @@ async def store_entities_for_memory(
         entity_type = entity.entity_type.value if hasattr(entity, 'entity_type') else 'unknown'
         description = entity.description if hasattr(entity, 'description') else ''
         confidence = entity.confidence if hasattr(entity, 'confidence') else 0.8
-        existing = neo4j_client.find_entity_by_name(entity_name, user_id, entity_type=entity_type)
+        existing = await asyncio.to_thread(neo4j_client.find_entity_by_name, entity_name, user_id, entity_type=entity_type)
 
         if existing:
             ent_id = existing['id']
             if hasattr(neo4j_client, 'link_entity_to_memory'):
-                neo4j_client.link_entity_to_memory(ent_id, memory_id)
+                await asyncio.to_thread(neo4j_client.link_entity_to_memory, ent_id, memory_id)
         else:
             ent_id = f"ent_{uuid.uuid4().hex[:12]}"
-            neo4j_client.create_entity(
+            await asyncio.to_thread(
+                neo4j_client.create_entity,
                 entity_id=ent_id,
                 name=entity_name,
                 entity_type=entity_type,
@@ -1181,7 +1209,8 @@ async def store_entities_for_memory(
         target_id = entity_name_to_id.get(getattr(relation, 'target_name', ''))
         if source_id and target_id:
             relation_type = relation.relation_type.value if hasattr(relation, 'relation_type') else 'related_to'
-            neo4j_client.create_relation(
+            await asyncio.to_thread(
+                neo4j_client.create_relation,
                 source_id=source_id,
                 target_id=target_id,
                 relation_type=relation_type,
@@ -1716,6 +1745,7 @@ async def add_memory(request: AddMemoryRequest):
 
         if processed_result.get("memories"):
             # 处理每条记忆
+            bm25_new_docs = []  # 攒批，避免每条记忆都触发 BM25 全量重建
             for mem_item in processed_result["memories"]:
                 content = mem_item.get("content", "").strip()
                 importance = mem_item.get("importance", 0.5)
@@ -1740,17 +1770,19 @@ async def add_memory(request: AddMemoryRequest):
                     continue
 
                 # 生成向量
-                vector = encode_text(content)
+                vector = await encode_text_async(content)
 
                 # 去重检查
                 if qdrant_client and qdrant_client.is_available():
-                    similar = qdrant_client.find_similar(
+                    similar = await asyncio.to_thread(
+                        qdrant_client.find_similar,
                         vector, threshold=0.95, user_id=user_id
                     )
 
                     if similar:
                         # 更新现有记忆
-                        qdrant_client.update_memory(
+                        await asyncio.to_thread(
+                            qdrant_client.update_memory,
                             similar['id'],
                             {
                                 'merge_count': similar.get('payload', {}).get('merge_count', 0) + 1,
@@ -1778,9 +1810,9 @@ async def add_memory(request: AddMemoryRequest):
                 }
 
                 if qdrant_client and qdrant_client.is_available():
-                    qdrant_client.add_memory(memory_id, vector, payload)
-                    # 更新 BM25 索引
-                    update_bm25_index(memory_id, content)
+                    await asyncio.to_thread(qdrant_client.add_memory, memory_id, vector, payload)
+                    # BM25 攒批，循环结束后一次性重建
+                    bm25_new_docs.append({'id': memory_id, 'content': content})
 
                 added_count += 1
                 added_memory_ids.append(memory_id)
@@ -1791,6 +1823,10 @@ async def add_memory(request: AddMemoryRequest):
                 print(f"   📝 新增记忆: {content[:60]}{'...' if len(content) > 60 else ''}")
                 print(f"      └─ 类型:{type_label} | 重要度:{importance:.0%}{tags_str}")
                 logger.info(f"[OK] 新增记忆: {content[:50]}... (类型:{memory_type}, 重要度:{importance})")
+
+            # 攒批重建 BM25（一次全量重建替代每条记忆全量重建）
+            if bm25_new_docs and bm25_searcher:
+                await asyncio.to_thread(bm25_searcher.add_documents_batch, bm25_new_docs)
 
         # ========== 2. 自动提取实体 ==========
         if entity_extractor and neo4j_client:
@@ -1807,12 +1843,13 @@ async def add_memory(request: AddMemoryRequest):
                             entity_type = entity.entity_type.value if hasattr(entity, 'entity_type') else 'unknown'
 
                             # 检查实体是否已存在
-                            existing = neo4j_client.find_entity_by_name(entity_name, user_id)
+                            existing = await asyncio.to_thread(neo4j_client.find_entity_by_name, entity_name, user_id)
                             if not existing:
                                 # 生成实体 ID（uuid 已在文件顶部导入）
                                 new_entity_id = str(uuid.uuid4())
 
-                                success = neo4j_client.create_entity(
+                                success = await asyncio.to_thread(
+                                    neo4j_client.create_entity,
                                     entity_id=new_entity_id,
                                     name=entity_name,
                                     entity_type=entity_type,
@@ -1829,7 +1866,7 @@ async def add_memory(request: AddMemoryRequest):
                             else:
                                 for mid in added_memory_ids:
                                     if hasattr(neo4j_client, 'link_entity_to_memory'):
-                                        neo4j_client.link_entity_to_memory(existing['id'], mid)
+                                        await asyncio.to_thread(neo4j_client.link_entity_to_memory, existing['id'], mid)
                         except Exception as ee:
                             logger.warning(f"保存实体失败: {ee}")
 
@@ -1848,11 +1885,12 @@ async def add_memory(request: AddMemoryRequest):
                             target_name = rel.target_name if hasattr(rel, 'target_name') else ''
                             relation_type = rel.relation_type.value if hasattr(rel, 'relation_type') else 'related_to'
 
-                            source_entity = neo4j_client.find_entity_by_name(source_name, user_id)
-                            target_entity = neo4j_client.find_entity_by_name(target_name, user_id)
+                            source_entity = await asyncio.to_thread(neo4j_client.find_entity_by_name, source_name, user_id)
+                            target_entity = await asyncio.to_thread(neo4j_client.find_entity_by_name, target_name, user_id)
 
                             if source_entity and target_entity:
-                                neo4j_client.create_relation(
+                                await asyncio.to_thread(
+                                    neo4j_client.create_relation,
                                     source_id=source_entity['id'],
                                     target_id=target_entity['id'],
                                     relation_type=relation_type,
@@ -1929,6 +1967,7 @@ async def add_memory_raw(request: AddRawMemoryRequest):
         added_count = 0
         type_counts = {}
         extracted_entities = []
+        bm25_new_docs = []  # 攒批，避免每条记忆都触发 BM25 全量重建
 
         for msg in request.messages:
             content = msg.content
@@ -1941,11 +1980,11 @@ async def add_memory_raw(request: AddRawMemoryRequest):
                 memory_type = "general"
 
             if content and len(content) > 5:
-                vector = encode_text(content)
+                vector = await encode_text_async(content)
 
                 # 去重
                 if qdrant_client and qdrant_client.is_available():
-                    similar = qdrant_client.find_similar(vector, threshold=0.95, user_id=user_id)
+                    similar = await asyncio.to_thread(qdrant_client.find_similar, vector, threshold=0.95, user_id=user_id)
                     if similar:
                         continue
 
@@ -1978,12 +2017,16 @@ async def add_memory_raw(request: AddRawMemoryRequest):
                 }
 
                 if qdrant_client and qdrant_client.is_available():
-                    qdrant_client.add_memory(memory_id, vector, payload)
-                    # 更新 BM25 索引
-                    update_bm25_index(memory_id, content)
+                    await asyncio.to_thread(qdrant_client.add_memory, memory_id, vector, payload)
+                    # BM25 攒批，循环结束后一次性重建
+                    bm25_new_docs.append({'id': memory_id, 'content': content})
 
                 added_count += 1
                 type_counts[memory_type] = type_counts.get(memory_type, 0) + 1
+
+        # 攒批重建 BM25（一次全量重建替代每条记忆全量重建）
+        if bm25_new_docs and bm25_searcher:
+            await asyncio.to_thread(bm25_searcher.add_documents_batch, bm25_new_docs)
 
         result = {
             "status": "success",
@@ -2019,7 +2062,6 @@ async def search_memory(request: SearchMemoryRequest):
         raise HTTPException(status_code=500, detail="Embedding 模型未加载")
 
     try:
-        print(datetime.now().isoformat(timespec='milliseconds'))
         user_id = request.user_id or USER_ID
 
         # 确定是否启用 BM25（请求参数优先，否则使用配置）
@@ -2037,349 +2079,289 @@ async def search_memory(request: SearchMemoryRequest):
         requested_layers = [layer for layer in MEMORY_LAYERS if layer in set(requested_layers)] or MEMORY_LAYERS
         reranker_used = False
 
-        # 被动检索日志
-        print(f"[分层检索] 查询: {request.query[:80]}{'...' if len(request.query) > 80 else ''}")
-        print(f"参数: top_k={request.top_k}, 阈值={request.similarity_threshold}, layers={requested_layers}, 图谱={'启用' if enable_graph else '禁用'}, BM25={'启用' if enable_bm25 else '禁用'}")
+        # 🔍 被动检索日志
+        print(f"\n{'='*50}")
+        print(f"🔍 [分层检索] 查询: {request.query[:80]}{'...' if len(request.query) > 80 else ''}")
+        print(f"   参数: top_k={request.top_k}, 阈值={request.similarity_threshold}, layers={requested_layers}, 图谱={'启用' if enable_graph else '禁用'}, BM25={'启用' if enable_bm25 else '禁用'}")
 
-        query_vector = await asyncio.to_thread(encode_text,request.query)
+        query_vector = await encode_text_async(request.query)
 
+        # 使用字典来合并不同检索方式的结果
+        results_map = {}  # id -> {data, scores: {vector, bm25}}
 
-        #1.向量搜索
-        async def vector_search_task():
-            if not (qdrant_client and qdrant_client.is_available()):
-                print("qdrant出现错误，无法进行搜索")
-                return []
-            def _do_search():
-                recall_top_k = max(request.top_k * 3, 8)
-                results = []
-                for layer_name in requested_layers:
-                    layer_results = qdrant_client.search(
-                        query_vector=query_vector,
-                        top_k=recall_top_k,
-                        score_threshold=request.similarity_threshold,
-                        user_id=user_id,
-                        memory_type=request.memory_types[0] if request.memory_types and len(request.memory_types) == 1 else None,
-                        memory_types=request.memory_types if request.memory_types and len(request.memory_types) > 1 else None,
-                        tags=request.tags,
-                        layer=layer_name
+        # 1. Qdrant 三层向量搜索
+        if qdrant_client and qdrant_client.is_available():
+            recall_top_k = max(request.top_k * 3, 8)
+            for layer_name in requested_layers:
+                vector_results = await asyncio.to_thread(
+                    qdrant_client.search,
+                    query_vector=query_vector,
+                    top_k=recall_top_k,
+                    score_threshold=request.similarity_threshold,
+                    user_id=user_id,
+                    memory_type=request.memory_types[0] if request.memory_types and len(request.memory_types) == 1 else None,
+                    memory_types=request.memory_types if request.memory_types and len(request.memory_types) > 1 else None,
+                    tags=request.tags,
+                    layer=layer_name
                 )
-                results.extend(layer_results)
+                for r in vector_results:
+                    r_id = r.get('id')
+                    if r_id:
+                        results_map.setdefault(r_id, {'data': r, 'scores': {}})
+                        results_map[r_id]['data'].update(r)
+                        results_map[r_id]['scores']['vector'] = max(results_map[r_id]['scores'].get('vector', 0), r.get('similarity', 0))
 
-                #兼容旧数据(无layer字段)
-                if 'LongTermMemory' in requested_layers:
-                    legacy_results = qdrant_client.search(
-                        query_vector=query_vector,
-                        top_k=recall_top_k,
-                        score_threshold=request.similarity_threshold,
-                        user_id=user_id,
-                        memory_type=request.memory_types[0] if request.memory_types and len(request.memory_types) == 1 else None,
-                        memory_types=request.memory_types if request.memory_types and len(request.memory_types) > 1 else None,
-                        tags=request.tags
-                    )
-                    for r in legacy_results:
-                        if not r.get('payload',{}).get('layer'):
-                            r['layer'] = 'LongTermMemory'
-                            results.append(r)
-                
-                return results
-            
-            return await asyncio.to_thread(_do_search)
-        
-    #2.BM25搜索
-        async def bm25_search_task():
-            if  not (enable_bm25 and bm25_searcher):
-                print("bm25搜索未启用或启动失败")
-                return None
-        
-            def _do_search():
-                return bm25_searcher.search(
-                    request.query,
-                    top_k = request.top_k*3
+            # 兼容缺 layer 的旧数据：按 LongTermMemory 参与召回
+            if 'LongTermMemory' in requested_layers:
+                legacy_results = await asyncio.to_thread(
+                    qdrant_client.search,
+                    query_vector=query_vector,
+                    top_k=recall_top_k,
+                    score_threshold=request.similarity_threshold,
+                    user_id=user_id,
+                    memory_type=request.memory_types[0] if request.memory_types and len(request.memory_types) == 1 else None,
+                    memory_types=request.memory_types if request.memory_types and len(request.memory_types) > 1 else None,
+                    tags=request.tags
                 )
-            return await asyncio.to_thread(_do_search)
-    
-    #3.图谱增强搜索
-        async def graph_search_task():
-            if not (enable_graph and neo4j_client and neo4j_client.is_available()):
-                print("图搜索未启用或启动失败")
-                return None
-        
-            def _do_search():
-            
-                import re
-                # 提取查询中的潜在实体名
-                potential_entities = []
-                matched_entities_info = []
-                related_memory_ids = set()
-                graph_paths = []
-                # 中文词汇
-                potential_entities.extend(re.findall(r'[\u4e00-\u9fff]{2,4}', request.query))
-                # 英文专有名词
-                potential_entities.extend(re.findall(r'[A-Z][a-z]+(?:\s+[A-Z][a-z]+)*', request.query))
-                print(f"图谱搜索: 提取到 {len(potential_entities)} 个候选实体")
-
-                #匹配图中的实体
-                matched_entity_ids = []
-                for name in potential_entities[:10]:
-                    entity = neo4j_client.find_entities_by_name(name, user_id)
-                    if entity:
-                        matched_entity_ids.append(entity['id'])
-                        matched_entities_info.append({
-                            'id':entity['id'],
-                            'name': entity.get('name'),
-                            'entity_type': entity.get('type'),
-                            'matched_text': name
-                        })
-                
-                if matched_entity_ids:
-                    #查询关联实体
-                    all_ids = set(matched_entity_ids)
-                    for eid in matched_entity_ids:
-                        related = neo4j_client.find_related_entities(eid , max_depth=3)
-                        for rel in related:
-                            all_ids.add(rel['id'])
-
-                    #查询关联记忆的id
-                    graph_mids = []
-                    graph_mids = neo4j_client.get_memories_by_entities(list(all_ids))
-
-                    related_memory_ids = set(graph_mids)
-                    graph_paths = []
-                    if len(matched_entity_ids) >= 2:
-                        max_entities = min(3,len(matched_entity_ids))
-                        for i in range(max_entities):
-                            for j in range(i+1,min(max_entities,4)):
-                                path = neo4j_client.find_path(matched_entity_ids[i], matched_entity_ids[j], max_length=3)
-                                if path:
-                                    graph_paths.append(path)
-                    
-                    else:
-                        graph_paths=[]
-
-                return {
-                    'matched_entities_info': matched_entities_info,
-                    'related_memory_ids': related_memory_ids,
-                    'graph_paths':graph_paths
-                }
-        
-            return await asyncio.to_thread(_do_search)
-        
-        #并发执行任务
-        task = []
-        task.append(vector_search_task())
-
-        if enable_bm25:
-            task.append(bm25_search_task())
-        if enable_graph:
-            task.append(graph_search_task())
-        
-        # 等待所有任务完成
-        # return_exceptions=True 防止某一个失败导致全盘皆输
-        results_list = await asyncio.gather(*task, return_exceptions=True)
-
-        #解析结果
-        vector_results = None
-        bm25_results = None
-        graph_results = None
-
-        vector_results = results_list[0]
-        if isinstance(vector_results, Exception):
-            vector_results = []
-        
-        idx = 1
-        if enable_bm25:
-            bm25_results = results_list[idx]
-            if isinstance(bm25_results,Exception):
-                bm25_results = None
-            idx+=1
-
-        if enable_graph:
-            graph_results = results_list[idx]
-            if isinstance(graph_results,Exception):
-                graph_results = None
-        
-        print(f"并行任务完成: 向量({len(vector_results)}), BM25({len(bm25_results) if bm25_results else 0}), 图谱({'命中' if graph_results else '未命中'})")
-
-        # 4. 结果合并与后处理
-        results_map = {}
-
-        # --- 4.1 处理向量结果 ---
-        for r in vector_results:
-            r_id = r.get('id')
-            if r_id:
-                results_map.setdefault(r_id, {'data': r, 'scores': {}})
-                results_map[r_id]['data'].update(r)
-                results_map[r_id]['scores']['vector'] = max(results_map[r_id]['scores'].get('vector', 0), r.get('similarity', 0))
-
-        # --- 4.2 处理 BM25 结果 ---
-        if bm25_results:
-            max_bm25_score = max(score for _, score in bm25_results) or 1
-            missing_ids = []
-            bm25_score_map = {}
-
-            for doc_id, score in bm25_results:
-                normalized_score = score / max_bm25_score
-                bm25_score_map[doc_id] = normalized_score
-
-                if doc_id in results_map:
-                    # 命中向量结果：仅加分
-                    results_map[doc_id]['scores']['bm25'] = normalized_score
-                else:
-                    # 未命中：记录 ID 稍后批量拉取
-                    missing_ids.append(doc_id)
-
-            # 批量拉取 BM25 独有记忆
-            if missing_ids:
-                # 修正点：加上 .get_memory
-                async def fetch_one(mid):
-                    return await asyncio.to_thread(qdrant_client.get_memory, mid)
-                
-                fetched_memories = await asyncio.gather(*[fetch_one(mid) for mid in missing_ids], return_exceptions=True)
-                
-                for mem_res in fetched_memories:
-                    if isinstance(mem_res, Exception):
+                for r in legacy_results:
+                    payload = r.get('payload', {}) if isinstance(r.get('payload'), dict) else {}
+                    if payload.get('layer'):
                         continue
-                    memory = mem_res
-                    payload = memory.get('payload', {})
-                    
-                    # 基础校验
-                    if not memory or payload.get('user_id') != user_id or payload.get('status') in ('deleted', 'archived'):
-                        continue
+                    r_id = r.get('id')
+                    if r_id:
+                        r['layer'] = 'LongTermMemory'
+                        results_map.setdefault(r_id, {'data': r, 'scores': {}})
+                        results_map[r_id]['data'].update(r)
+                        results_map[r_id]['scores']['vector'] = max(results_map[r_id]['scores'].get('vector', 0), r.get('similarity', 0))
 
-                    # 转换格式
-                    memory_data = {
-                        'id': memory.get('id'),
-                        'content': payload.get('content', ''),
-                        'similarity': 0, # BM25 无向量分
-                        'importance': payload.get('importance', 0.5),
-                        'memory_type': payload.get('memory_type', 'general'),
-                        'layer': normalize_layer(payload.get('layer'), 'LongTermMemory'),
-                        'tags': payload.get('tags', []),
-                        'payload': payload,
-                        'bm25_only': True
-                    }
-                    results_map[memory.get('id')] = {'data': memory_data, 'scores': {'bm25': normalized_score}}
+        # 2. BM25 关键词搜索
+        if enable_bm25 and bm25_searcher:
+            try:
+                bm25_results = await asyncio.to_thread(bm25_searcher.search, request.query, top_k=request.top_k * 3)
 
-        # --- 4.3 处理图谱结果 ---
-        if graph_results:
-            related_ids = graph_results.get('related_memory_ids', set())
-            matched_info = graph_results.get('matched_entities_info', [])
+                if bm25_results:
+                    # 归一化 BM25 分数
+                    max_bm25_score = max(score for _, score in bm25_results) or 1
 
-            graph_paths_list = graph_results.get('graph_paths',[])
+                    for doc_id, score in bm25_results:
+                        normalized_score = score / max_bm25_score
 
-            # A. 遍历现有结果进行加分 (修正点：items() 而不是 item())
-            for r_id, r_item in results_map.items():
-                r_entities = r_item['data'].get('entity_ids', []) or r_item['data'].get('payload', {}).get('entity_ids', [])
-                
-                if r_id in related_ids:
-                    r_item['data']['graph_boost'] = 0.15                        
-                    r_item['data']['graph_boost_reason'] = 'matched_entity_memory'
-                    r_item['data']['matched_entities'] = matched_info
-                    r_item['data']['graph_paths'] = graph_paths_list
-                elif any(eid in related_ids for eid in r_entities):
-                    r_item['data']['graph_boost'] = 0.1
-                    r_item['data']['graph_boost_reason'] = 'result_entity_overlap'
-                    r_item['data']['matched_entities'] = matched_info
-                    r_item['data']['graph_paths'] = graph_paths_list
+                        if doc_id in results_map:
+                            # 已存在于向量搜索结果中，添加 BM25 分数
+                            results_map[doc_id]['scores']['bm25'] = normalized_score
+                        else:
+                            # 仅 BM25 找到的结果，需要从存储获取完整数据
+                            memory = await asyncio.to_thread(qdrant_client.get_memory, doc_id) if qdrant_client else None
+                            memory_payload = memory.get('payload', {}) if memory else {}
+                            if memory and memory_payload.get('user_id') == user_id and memory_payload.get('status', 'active') not in ('deleted', 'archived'):
+                                payload_layer = normalize_layer(memory_payload.get('layer'), default='LongTermMemory')
+                                if payload_layer not in requested_layers:
+                                    continue
+                                if request.tags and not any(tag in memory_payload.get('tags', []) for tag in request.tags):
+                                    continue
+                                if request.memory_types and memory_payload.get('memory_type', 'general') not in request.memory_types:
+                                    continue
+                                # 转换为标准格式
+                                memory_data = {
+                                    'id': doc_id,
+                                    'content': memory.get('payload', {}).get('content', memory.get('content', '')),
+                                    'similarity': 0,  # 无向量相似度
+                                    'importance': memory.get('payload', {}).get('importance', memory.get('importance', 0.5)),
+                                    'memory_type': memory.get('payload', {}).get('memory_type', memory.get('memory_type', 'general')),
+                                    'layer': payload_layer,
+                                    'status': memory_payload.get('status', 'active'),
+                                    'access_count': memory_payload.get('access_count', 0),
+                                    'last_accessed_at': memory_payload.get('last_accessed_at'),
+                                    'tags': memory.get('payload', {}).get('tags', memory.get('tags', [])),
+                                    'created_at': memory.get('payload', {}).get('created_at', memory.get('created_at')),
+                                    'updated_at': memory.get('payload', {}).get('updated_at', memory.get('updated_at')),
+                                    'entity_ids': memory.get('payload', {}).get('entity_ids', memory.get('entity_ids', [])),
+                                    'payload': memory_payload,
+                                    'bm25_only': True  # 标记仅BM25找到
+                                }
+                                results_map[doc_id] = {
+                                    'data': memory_data,
+                                    'scores': {'bm25': normalized_score}
+                                }
 
-            # B. 补全仅图谱命中的记忆
-            existing_ids = set(results_map.keys())
-            graph_only_ids = list(related_ids - existing_ids)
+                print(f"   📊 BM25 找到 {len(bm25_results)} 条候选记忆")
+            except Exception as e:
+                print(f"[警告] BM25 搜索失败: {e}")
 
-            if graph_only_ids:
-                async def fetch_graph_mem(mid):
-                    return await asyncio.to_thread(qdrant_client.get_memory, mid)
-                
-                fetched_graph_memories = await asyncio.gather(*[fetch_graph_mem(mid) for mid in graph_only_ids], return_exceptions=True)
-                
-                for mem_res in fetched_graph_memories:
-                    if isinstance(mem_res, Exception): continue
-                    
-                    memory = mem_res
-                    payload = memory.get('payload', {})
-                    # 基础校验
-                    if memory and payload.get('user_id') == user_id and payload.get('status') not in ('deleted', 'archived'):
-                        
-                        # 预过滤：避免查到脏数据
-                        if request.tags and not any(tag in payload.get('tags', []) for tag in request.tags): continue
-                        if request.memory_types and payload.get('memory_type', 'general') not in request.memory_types: continue
-                        if normalize_layer(payload.get('layer'), 'LongTermMemory') not in requested_layers: continue
-
-                        memory_data = {
-                            'id': memory.get('id'),
-                            'content': payload.get('content', ''),
-                            'similarity': 0.5, # 基础分
-                            'importance': payload.get('importance', 0.5),
-                            'payload': payload,
-                            'graph_boost': 0.2,
-                            'graph_boost_reason': 'graph_only',
-                            'graph_only': True,
-                            'matched_entities': matched_info,
-                            'graph_paths': graph_paths_list
-                        }
-                        results_map[memory.get('id')] = {'data': memory_data, 'scores': {}}
-
-
-        for r_id, r_item in results_map.items():
-            r_item['data']['vector_score'] = r_item['scores'].get('vector', 0)
-            r_item['data']['bm25_score'] = r_item['scores'].get('bm25', 0)
-        # 5. 结果处理流程
-        
-        # 将 Map 转为 List
-        raw_results = [item['data'] for item in results_map.values()]
-        
-        # --- 步骤 A: 硬性过滤 & 基础分计算 ---
-        # 做完这一步，列表里的数据都是干净的，且具备 vector/bm25 基础分
-        valid_results = []
+        # 3. 合并结果并计算混合得分
         bm25_weight = config.get('search', {}).get('bm25_weight', 0.3) if config else 0.3
+        vector_weight = 1.0 - bm25_weight if enable_bm25 else 1.0
 
-        for r in raw_results:
-            pl = r.get('payload', {})
-            
-            # 1. Layer 过滤
-            current_layer = normalize_layer(r.get('layer') or pl.get('layer'), default='LongTermMemory')
-            if current_layer not in requested_layers:
-                continue
-            
-            # 2. Tag 过滤
-            current_tags = r.get('tags', [])
-            if request.tags and not any(tag in current_tags for tag in request.tags):
-                continue
-                
-            # 3. Type 过滤
-            current_type = r.get('memory_type', 'general')
-            if request.memory_types and current_type not in request.memory_types:
-                continue
+        results = []
+        for r_id, r_data in results_map.items():
+            result = r_data['data'].copy()
+            scores = r_data['scores']
 
-            # --- 计算混合基础分 ---
-            vector_score = r.get('vector_score', 0)
-            bm25_score = r.get('bm25_score', 0)
-            
-            # 计算相似度
-            similarity = r.get('similarity', 0) # 默认值 (Graph Only 可能是 0.5)
-            
+            # 计算混合相似度得分
             if enable_bm25:
+                vector_score = scores.get('vector', 0)
+                bm25_score = scores.get('bm25', 0)
                 if vector_score > 0 and bm25_score > 0:
-                    similarity = vector_score + bm25_weight * bm25_score
+                    # 两者都有：向量为主，BM25 加分
+                    mixed_similarity = vector_score + bm25_weight * bm25_score
                 elif vector_score > 0:
-                    similarity = vector_score
-                elif bm25_score > 0:
-                    similarity = bm25_weight * bm25_score
-            
-            # 更新基础分
-            r['similarity'] = similarity
-            r['vector_score'] = vector_score
-            r['bm25_score'] = bm25_score
-            
-            # 确保 graph_boost 存在
-            if 'graph_boost' not in r:
-                r['graph_boost'] = 0
+                    # 仅向量命中：直接用向量得分，不稀释
+                    mixed_similarity = vector_score
+                else:
+                    # 仅 BM25 命中：按 bm25_weight 缩放，防止归一化分数虚高
+                    mixed_similarity = bm25_weight * bm25_score
+                result['similarity'] = mixed_similarity
+                result['vector_score'] = vector_score
+                result['bm25_score'] = bm25_score
 
-            valid_results.append(r)
+            results.append(result)
 
-        results = valid_results
+        # 标签过滤
+        if request.tags:
+            results = [
+                r for r in results
+                if any(tag in r.get('tags', []) for tag in request.tags)
+            ]
 
-        # --- 步骤 B: 多维加权---
+        # 记忆类型过滤
+        if request.memory_types:
+            results = [
+                r for r in results
+                if r.get('memory_type', 'general') in request.memory_types
+            ]
+
+        # 生命周期层过滤
+        results = [
+            r for r in results
+            if normalize_layer(r.get('layer') or (r.get('payload') or {}).get('layer'), default='LongTermMemory') in requested_layers
+        ]
+
+        # 图增强搜索
+        if enable_graph:
+            if not neo4j_client:
+                print(f"   ⚠️ 图谱客户端未初始化")
+            elif not neo4j_client.is_available():
+                print(f"   ⚠️ 图谱客户端不可用")
+            else:
+                # 从查询中提取实体进行图谱关联搜索
+                try:
+                    import re
+                    # 提取查询中的潜在实体名
+                    potential_entities = []
+                    matched_entities_info = []
+                    graph_paths = []
+                    # 中文词汇
+                    potential_entities.extend(re.findall(r'[\u4e00-\u9fff]{2,4}', request.query))
+                    # 英文专有名词
+                    potential_entities.extend(re.findall(r'[A-Z][a-z]+(?:\s+[A-Z][a-z]+)*', request.query))
+
+                    print(f"   🕸️ 图谱搜索: 提取到 {len(potential_entities)} 个候选实体")
+
+                    # 匹配图中的实体
+                    matched_entity_ids = []
+                    for name in potential_entities[:10]:
+                        entity = await asyncio.to_thread(neo4j_client.find_entity_by_name, name, user_id)
+                        if entity:
+                            matched_entity_ids.append(entity['id'])
+                            matched_entities_info.append({
+                                'id': entity['id'],
+                                'name': entity.get('name'),
+                                'entity_type': entity.get('entity_type'),
+                                'matched_text': name
+                            })
+                            # 获取相关实体
+                            related = await asyncio.to_thread(neo4j_client.find_related_entities, entity['id'], max_depth=2)
+                            for rel in related:
+                                if rel['id'] not in matched_entity_ids:
+                                    matched_entity_ids.append(rel['id'])
+
+                    if matched_entity_ids:
+                        print(f"   🕸️ 图谱搜索: 匹配到 {len(matched_entity_ids)} 个实体")
+                        # 获取实体关联的记忆
+                        if hasattr(neo4j_client, 'get_memories_by_entities'):
+                            graph_memory_ids = await asyncio.to_thread(neo4j_client.get_memories_by_entities, matched_entity_ids)
+                        else:
+                            graph_memory_ids = []
+                            for eid in matched_entity_ids:
+                                mids = await asyncio.to_thread(neo4j_client.get_entity_memories, eid)
+                                graph_memory_ids.extend(mids)
+                            graph_memory_ids = list(set(graph_memory_ids))
+
+                        # 为图谱关联的记忆添加加分
+                        result_ids = {r.get('id') for r in results}
+                        graph_boost_count = 0
+                        for r in results:
+                            r_id = r.get('id')
+                            r_entities = r.get('entity_ids', [])
+
+                            # 检查是否通过图谱关联
+                            if r_id in graph_memory_ids:
+                                r['graph_boost'] = 0.15  # 直接关联加分
+                                r['graph_boost_reason'] = 'matched_entity_memory'
+                                r['matched_entities'] = matched_entities_info
+                                graph_boost_count += 1
+                            elif any(eid in r_entities for eid in matched_entity_ids):
+                                r['graph_boost'] = 0.1  # 实体匹配加分
+                                r['graph_boost_reason'] = 'result_entity_overlap'
+                                r['matched_entities'] = matched_entities_info
+                                graph_boost_count += 1
+
+                        # 添加向量搜索未找到但图谱关联的记忆
+                        graph_only_count = 0
+                        for mem_id in graph_memory_ids[:5]:
+                            if mem_id not in result_ids:
+                                memory = await asyncio.to_thread(qdrant_client.get_memory, mem_id)
+                                pl = (memory or {}).get('payload') or {}
+                                if memory and pl.get('user_id') == user_id and pl.get('status', 'active') not in ('deleted', 'archived'):
+                                    payload_layer = normalize_layer(pl.get('layer'), default='LongTermMemory')
+                                    if payload_layer not in requested_layers:
+                                        continue
+                                    if request.tags and not any(tag in pl.get('tags', []) for tag in request.tags):
+                                        continue
+                                    if request.memory_types and pl.get('memory_type', 'general') not in request.memory_types:
+                                        continue
+                                    # get_memory 返回的是 {id, content, payload}，时间戳在 payload 内，需展平否则检索结果无 created_at
+                                    row = {
+                                        'id': memory.get('id'),
+                                        'content': memory.get('content') or pl.get('content', ''),
+                                        'similarity': 0.5,
+                                        'importance': pl.get('importance', 0.5),
+                                        'memory_type': pl.get('memory_type', 'general'),
+                                        'layer': payload_layer,
+                                        'status': pl.get('status', 'active'),
+                                        'access_count': pl.get('access_count', 0),
+                                        'last_accessed_at': pl.get('last_accessed_at'),
+                                        'tags': pl.get('tags', []),
+                                        'created_at': pl.get('created_at') or pl.get('timestamp'),
+                                        'updated_at': pl.get('updated_at'),
+                                        'entity_ids': pl.get('entity_ids', []),
+                                        'graph_boost': 0.2,
+                                        'graph_boost_reason': 'graph_only_entity_memory',
+                                        'matched_entities': matched_entities_info,
+                                        'graph_only': True,
+                                        'payload': pl,
+                                    }
+                                    results.append(row)
+                                    graph_only_count += 1
+
+                        if graph_boost_count > 0 or graph_only_count > 0:
+                            print(f"   🕸️ 图谱增强: {graph_boost_count} 条加分, {graph_only_count} 条仅图谱")
+                            if len(matched_entity_ids) >= 2 and hasattr(neo4j_client, 'find_path'):
+                                for idx, source_id in enumerate(matched_entity_ids[:3]):
+                                    for target_id in matched_entity_ids[idx + 1:4]:
+                                        path = await asyncio.to_thread(neo4j_client.find_path, source_id, target_id, max_length=3)
+                                        if path:
+                                            graph_paths.append(path)
+                            for r in results:
+                                if r.get('matched_entities') and graph_paths:
+                                    r['graph_paths'] = graph_paths[:3]
+                    else:
+                        print(f"   🕸️ 图谱搜索: 未匹配到任何实体")
+
+                except Exception as e:
+                    print(f"[警告] 图增强搜索失败: {e}")
+
+        # 应用多维加权：类型 + 生命周期层 + 最近访问 + 访问频率 + 图谱
         IMPORTANCE_WEIGHT = search_config.get('importance_weight', 0.3)
         TYPE_WEIGHT_FACTOR = search_config.get('type_weight_factor', 0.2)
         layer_weights = {**DEFAULT_LAYER_WEIGHTS, **search_config.get('layer_weights', {})}
@@ -2417,7 +2399,6 @@ async def search_memory(request: SearchMemoryRequest):
                 'frequency': round(frequency_boost, 4),
                 'graph': round(graph_boost, 4)
             }
-            # 最终得分公式：混合相似度 * (1 + 权重系数) + 图谱加分
             result['final_score'] = similarity * (
                 1 + importance * IMPORTANCE_WEIGHT + (type_weight - 1) * TYPE_WEIGHT_FACTOR
                 + layer_boost + recency_boost + frequency_boost
@@ -2427,9 +2408,9 @@ async def search_memory(request: SearchMemoryRequest):
         # 排序
         results.sort(key=lambda x: x.get('final_score', 0), reverse=True)
 
-        # 阈值过滤
         # 基于原始相似度（混合后）过滤，而非 final_score。
-        # BM25-only 结果没有向量相似度，使用归一化后的 bm25_score 过同一阈值
+        # BM25-only 结果没有向量相似度，使用归一化后的 bm25_score 过同一阈值，
+        # 避免先乘 bm25_weight 后被默认 0.5 阈值全部误杀。
         threshold = request.similarity_threshold
         before_filter = len(results)
         results = [
@@ -2438,14 +2419,14 @@ async def search_memory(request: SearchMemoryRequest):
             or (r.get('bm25_only') and r.get('bm25_score', 0) >= threshold)
         ]
         if before_filter > len(results):
-            print(f"阈值过滤: {before_filter} → {len(results)} 条 (阈值={threshold}, 基于相似度)")
+            print(f"   🔻 阈值过滤: {before_filter} → {len(results)} 条 (阈值={threshold}, 基于相似度)")
 
-        # CrossEncoder 精排
+        # CrossEncoder 精排：模型缺失/失败时保守回退粗排
         rerank_top_n = search_config.get('rerank_top_n', 20)
         if search_config.get('enable_reranker', False) and reranker and reranker.is_available() and results:
             try:
                 candidates = results[:max(rerank_top_n, request.top_k)]
-                results = reranker.rerank(request.query, candidates, top_k=request.top_k)
+                results = await asyncio.to_thread(reranker.rerank, request.query, candidates, top_k=request.top_k)
                 for item in results:
                     item['coarse_score'] = item.get('coarse_score', item.get('final_score', 0))
                     if item.get('rerank_score') is not None:
@@ -2471,9 +2452,7 @@ async def search_memory(request: SearchMemoryRequest):
             _tags = r.get('tags')
             if not isinstance(_tags, list):
                 _tags = pl.get('tags', [])
-            
             item = {
-                "id": r.get('id'),
                 "content": r.get('content') or pl.get('content', ''),
                 "similarity": round(r.get('similarity', 0), 4),
                 "importance": r.get('importance', pl.get('importance', 0.5)),
@@ -2503,7 +2482,7 @@ async def search_memory(request: SearchMemoryRequest):
             }
             if r.get('id') is not None:
                 item["id"] = r.get('id')
-            # 添加 BM25 相关字段
+            # 添加 BM25 相关字段（如果启用）
             if enable_bm25:
                 item["vector_score"] = round(r.get('vector_score', 0), 4)
                 item["bm25_score"] = round(r.get('bm25_score', 0), 4)
@@ -2514,9 +2493,9 @@ async def search_memory(request: SearchMemoryRequest):
         if formatted_results:
             asyncio.create_task(update_memory_usage_async([m.get('id') for m in formatted_results]))
 
-        # 检索结果日志 (保留你的日志逻辑)
+        # 🔍 检索结果日志（综合检索详情）
         if formatted_results:
-            print(f"[检索结果] 找到 {len(formatted_results)} 条相关记忆 (reranker={'启用' if reranker_used else '未用'}):")
+            print(f"✅ [检索结果] 找到 {len(formatted_results)} 条相关记忆 (reranker={'启用' if reranker_used else '未用'}):")
             for i, mem in enumerate(formatted_results[:5]):  # 最多显示5条
                 content_preview = mem['content'][:50].replace('\n', ' ')
                 type_label = {'preference': '偏好', 'fact': '事实', 'episodic': '情景',
@@ -2528,13 +2507,14 @@ async def search_memory(request: SearchMemoryRequest):
                     bm25_info = f"|向量:{mem.get('vector_score', 0):.2f}|BM25:{mem.get('bm25_score', 0):.2f}"
                     if mem.get('bm25_only'):
                         bm25_info += "(仅BM25)"
-                print(f"{i+1}. [{mem.get('layer', 'LongTermMemory')}/{type_label}] {content_preview}...")
-                print(f"   └─ 相似度:{mem['similarity']:.2f}{bm25_info} | 类型权重:{mem['type_weight']:.1f}x | 粗排:{mem.get('coarse_score', 0):.2f} | 最终:{mem['final_score']:.2f}{graph_info}")
+                print(f"   {i+1}. [{mem.get('layer', 'LongTermMemory')}/{type_label}] {content_preview}...")
+                print(f"      └─ 相似度:{mem['similarity']:.2f}{bm25_info} | 类型权重:{mem['type_weight']:.1f}x | 粗排:{mem.get('coarse_score', 0):.2f} | 最终:{mem['final_score']:.2f}{graph_info}")
             if len(formatted_results) > 5:
                 print(f"   ... 还有 {len(formatted_results) - 5} 条")
         else:
-            print(f"[检索结果] 未找到相关记忆")
-        print(datetime.now().isoformat(timespec='milliseconds'))
+            print(f"ℹ️ [检索结果] 未找到相关记忆")
+        print(f"{'='*50}\n")
+
         return {
             "query": request.query,
             "memories": formatted_results,
@@ -2544,9 +2524,8 @@ async def search_memory(request: SearchMemoryRequest):
         }
 
     except Exception as e:
-        import traceback
-        traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
+
 
 @app.get("/list")
 async def list_memories(
@@ -4066,7 +4045,7 @@ async def trigger_memory_evolution(
     global evolution_schedule_anchor_at
     if not memory_evolution:
         raise HTTPException(status_code=503, detail="记忆自演化未启用")
-    result = await memory_evolution.evolve(user_id=user_id, limit=limit)
+    result = await asyncio.to_thread(memory_evolution.evolve, user_id=user_id, limit=limit)
     if bm25_searcher:
         await rebuild_bm25_index()
     if result.get('status') == 'success':
@@ -4171,7 +4150,7 @@ async def submit_memory_feedback(request: MemoryFeedbackRequest):
 
     try:
         # 获取原记忆
-        original = qdrant_client.get_memory(request.memory_id)
+        original = await asyncio.to_thread(qdrant_client.get_memory, request.memory_id)
         if not original:
             raise HTTPException(status_code=404, detail="记忆不存在")
 
@@ -4181,7 +4160,7 @@ async def submit_memory_feedback(request: MemoryFeedbackRequest):
                 raise HTTPException(status_code=400, detail="修正内容不能为空")
 
             # 更新内容
-            new_vector = encode_text(request.correction)
+            new_vector = await encode_text_async(request.correction)
             payload = original.get('payload', {})
             payload['content'] = request.correction
             payload['updated_at'] = datetime.now().isoformat()
@@ -4192,8 +4171,8 @@ async def submit_memory_feedback(request: MemoryFeedbackRequest):
                 'reason': request.reason
             })
 
-            qdrant_client.update_memory(request.memory_id, payload, new_vector)
-            update_bm25_index(request.memory_id, request.correction)
+            await asyncio.to_thread(qdrant_client.update_memory, request.memory_id, payload, new_vector)
+            await update_bm25_index_async(request.memory_id, request.correction)
 
             return {
                 "status": "success",
@@ -4211,12 +4190,12 @@ async def submit_memory_feedback(request: MemoryFeedbackRequest):
             original_content = payload.get('content', '')
             supplemented_content = f"{original_content}\n[补充] {request.correction}"
 
-            new_vector = encode_text(supplemented_content)
+            new_vector = await encode_text_async(supplemented_content)
             payload['content'] = supplemented_content
             payload['updated_at'] = datetime.now().isoformat()
 
-            qdrant_client.update_memory(request.memory_id, payload, new_vector)
-            update_bm25_index(request.memory_id, supplemented_content)
+            await asyncio.to_thread(qdrant_client.update_memory, request.memory_id, payload, new_vector)
+            await update_bm25_index_async(request.memory_id, supplemented_content)
 
             return {
                 "status": "success",
@@ -4228,11 +4207,11 @@ async def submit_memory_feedback(request: MemoryFeedbackRequest):
         elif request.feedback_type == "archive":
             # 归档：从默认检索/BM25 中隐藏，但可在归档列表恢复
             if hasattr(qdrant_client, 'archive_memory'):
-                success = qdrant_client.archive_memory(request.memory_id, reason=request.reason)
+                success = await asyncio.to_thread(qdrant_client.archive_memory, request.memory_id, reason=request.reason)
             else:
-                success = qdrant_client.update_memory(request.memory_id, {'status': 'archived', 'archived_at': datetime.now().isoformat(), 'feedback_reason': request.reason})
+                success = await asyncio.to_thread(qdrant_client.update_memory, request.memory_id, {'status': 'archived', 'archived_at': datetime.now().isoformat(), 'feedback_reason': request.reason})
             if success:
-                remove_bm25_document(request.memory_id)
+                await remove_bm25_document_async(request.memory_id)
 
             return {
                 "status": "success" if success else "failed",
@@ -4243,11 +4222,11 @@ async def submit_memory_feedback(request: MemoryFeedbackRequest):
         elif request.feedback_type == "delete":
             # 标记删除（保留人工显式软删除语义）
             if hasattr(qdrant_client, 'soft_delete_memory'):
-                success = qdrant_client.soft_delete_memory(request.memory_id, reason=request.reason)
+                success = await asyncio.to_thread(qdrant_client.soft_delete_memory, request.memory_id, reason=request.reason)
             else:
-                success = qdrant_client.delete_memory(request.memory_id)
+                success = await asyncio.to_thread(qdrant_client.delete_memory, request.memory_id)
             if success:
-                remove_bm25_document(request.memory_id)
+                await remove_bm25_document_async(request.memory_id)
 
             return {
                 "status": "success" if success else "failed",
@@ -4261,7 +4240,7 @@ async def submit_memory_feedback(request: MemoryFeedbackRequest):
                 raise HTTPException(status_code=400, detail="请指定目标记忆 ID")
 
             target_id = request.correction
-            target = qdrant_client.get_memory(target_id)
+            target = await asyncio.to_thread(qdrant_client.get_memory, target_id)
             if not target:
                 raise HTTPException(status_code=404, detail="目标记忆不存在")
 
@@ -4271,7 +4250,7 @@ async def submit_memory_feedback(request: MemoryFeedbackRequest):
             merged_content = f"{target_content}\n[合并自 {request.memory_id}] {original_content}"
 
             # 更新目标记忆
-            new_vector = encode_text(merged_content)
+            new_vector = await encode_text_async(merged_content)
             target_payload = target.get('payload', {})
             target_payload['content'] = merged_content
             target_payload['updated_at'] = datetime.now().isoformat()
@@ -4279,17 +4258,17 @@ async def submit_memory_feedback(request: MemoryFeedbackRequest):
             target_payload['merged_from'] = target_payload.get('merged_from', [])
             target_payload['merged_from'].append(request.memory_id)
 
-            qdrant_client.update_memory(target_id, target_payload, new_vector)
-            update_bm25_index(target_id, merged_content)
+            await asyncio.to_thread(qdrant_client.update_memory, target_id, target_payload, new_vector)
+            await update_bm25_index_async(target_id, merged_content)
 
             # 归档源记忆（merge 属于整理流程，保留可恢复性）
             if hasattr(qdrant_client, 'archive_memory'):
-                qdrant_client.archive_memory(request.memory_id, reason=request.reason or f"merged into {target_id}")
+                await asyncio.to_thread(qdrant_client.archive_memory, request.memory_id, reason=request.reason or f"merged into {target_id}")
             elif hasattr(qdrant_client, 'soft_delete_memory'):
-                qdrant_client.soft_delete_memory(request.memory_id, reason=request.reason or f"merged into {target_id}")
+                await asyncio.to_thread(qdrant_client.soft_delete_memory, request.memory_id, reason=request.reason or f"merged into {target_id}")
             else:
-                qdrant_client.delete_memory(request.memory_id)
-            remove_bm25_document(request.memory_id)
+                await asyncio.to_thread(qdrant_client.delete_memory, request.memory_id)
+            await remove_bm25_document_async(request.memory_id)
 
             return {
                 "status": "success",
