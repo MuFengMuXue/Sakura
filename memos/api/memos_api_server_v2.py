@@ -2089,21 +2089,46 @@ async def search_memory(request: SearchMemoryRequest):
         # 使用字典来合并不同检索方式的结果
         results_map = {}  # id -> {data, scores: {vector, bm25}}
 
-        # 1. Qdrant 三层向量搜索
+        # 1. Qdrant 多层向量搜索（各层 asyncio.gather 并行 to_thread，N 层全库扫描从串行 O(N×L) 降到 O(N)）
         if qdrant_client and qdrant_client.is_available():
             recall_top_k = max(request.top_k * 3, 8)
-            for layer_name in requested_layers:
-                vector_results = await asyncio.to_thread(
+            single_type = request.memory_types[0] if request.memory_types and len(request.memory_types) == 1 else None
+            multi_types = request.memory_types if request.memory_types and len(request.memory_types) > 1 else None
+
+            # 每个生命周期层一次扫描 + 兼容缺 layer 旧数据的 legacy 扫描（无 layer 过滤），全部并发提交
+            search_tasks = [
+                asyncio.to_thread(
                     qdrant_client.search,
                     query_vector=query_vector,
                     top_k=recall_top_k,
                     score_threshold=request.similarity_threshold,
                     user_id=user_id,
-                    memory_type=request.memory_types[0] if request.memory_types and len(request.memory_types) == 1 else None,
-                    memory_types=request.memory_types if request.memory_types and len(request.memory_types) > 1 else None,
+                    memory_type=single_type,
+                    memory_types=multi_types,
                     tags=request.tags,
                     layer=layer_name
                 )
+                for layer_name in requested_layers
+            ]
+            if 'LongTermMemory' in requested_layers:
+                search_tasks.append(asyncio.to_thread(
+                    qdrant_client.search,
+                    query_vector=query_vector,
+                    top_k=recall_top_k,
+                    score_threshold=request.similarity_threshold,
+                    user_id=user_id,
+                    memory_type=single_type,
+                    memory_types=multi_types,
+                    tags=request.tags
+                ))
+
+            # 按提交顺序取回：前 len(requested_layers) 个是各层结果，最后一个（若有）是 legacy
+            gathered = await asyncio.gather(*search_tasks, return_exceptions=True)
+
+            for layer_name, vector_results in zip(requested_layers, gathered):
+                if isinstance(vector_results, Exception):
+                    print(f"[警告] 层 {layer_name} 向量搜索失败: {vector_results}")
+                    continue
                 for r in vector_results:
                     r_id = r.get('id')
                     if r_id:
@@ -2113,26 +2138,20 @@ async def search_memory(request: SearchMemoryRequest):
 
             # 兼容缺 layer 的旧数据：按 LongTermMemory 参与召回
             if 'LongTermMemory' in requested_layers:
-                legacy_results = await asyncio.to_thread(
-                    qdrant_client.search,
-                    query_vector=query_vector,
-                    top_k=recall_top_k,
-                    score_threshold=request.similarity_threshold,
-                    user_id=user_id,
-                    memory_type=request.memory_types[0] if request.memory_types and len(request.memory_types) == 1 else None,
-                    memory_types=request.memory_types if request.memory_types and len(request.memory_types) > 1 else None,
-                    tags=request.tags
-                )
-                for r in legacy_results:
-                    payload = r.get('payload', {}) if isinstance(r.get('payload'), dict) else {}
-                    if payload.get('layer'):
-                        continue
-                    r_id = r.get('id')
-                    if r_id:
-                        r['layer'] = 'LongTermMemory'
-                        results_map.setdefault(r_id, {'data': r, 'scores': {}})
-                        results_map[r_id]['data'].update(r)
-                        results_map[r_id]['scores']['vector'] = max(results_map[r_id]['scores'].get('vector', 0), r.get('similarity', 0))
+                legacy_results = gathered[len(requested_layers)]
+                if isinstance(legacy_results, Exception):
+                    print(f"[警告] legacy 向量搜索失败: {legacy_results}")
+                else:
+                    for r in legacy_results:
+                        payload = r.get('payload', {}) if isinstance(r.get('payload'), dict) else {}
+                        if payload.get('layer'):
+                            continue
+                        r_id = r.get('id')
+                        if r_id:
+                            r['layer'] = 'LongTermMemory'
+                            results_map.setdefault(r_id, {'data': r, 'scores': {}})
+                            results_map[r_id]['data'].update(r)
+                            results_map[r_id]['scores']['vector'] = max(results_map[r_id]['scores'].get('vector', 0), r.get('similarity', 0))
 
         # 2. BM25 关键词搜索
         if enable_bm25 and bm25_searcher:
