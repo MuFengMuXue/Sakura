@@ -2552,6 +2552,7 @@ async def search_memory(request: SearchMemoryRequest):
             if not isinstance(_tags, list):
                 _tags = pl.get('tags', [])
             item = {
+                "id": r.get('id'),
                 "content": r.get('content') or pl.get('content', ''),
                 "similarity": round(r.get('similarity', 0), 4),
                 "importance": r.get('importance', pl.get('importance', 0.5)),
